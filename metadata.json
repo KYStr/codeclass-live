@@ -1,0 +1,5 @@
+{
+  "name": "CodeClass Live",
+  "description": "A real-time classroom coding assistant. Teachers can monitor student code, send instant feedback, and manage assignments. Students get a dedicated coding environment with teacher guidance and AI assistance.",
+  "requestFramePermissions": []
+}
