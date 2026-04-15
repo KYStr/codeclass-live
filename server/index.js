@@ -3,6 +3,8 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { initDatabase, db } from './database.js';
 import { authRoutes } from './routes/auth.js';
 import { studentRoutes } from './routes/students.js';
@@ -10,7 +12,12 @@ import { assignmentRoutes } from './routes/assignments.js';
 import classroomRoutes from './routes/classrooms.js';
 import { setupSocketHandlers } from './socket/handlers.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config({ path: path.join(__dirname, '.env.local'), override: true });
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '.env.local'), override: true });
 
 const app = express();
 const httpServer = createServer(app);
@@ -29,7 +36,7 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '6mb' }));
 
 // 將 io 實例附加到 request
 app.use((req, res, next) => {

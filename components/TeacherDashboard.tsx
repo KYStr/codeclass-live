@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StudentData, AssignmentData, studentApi, assignmentApi, classroomApi, ClassroomData } from '../services/api';
-import { emitFeedback, emitCodeExecute, onCodeResult, emitClearFeedback } from '../services/socket';
+import { emitFeedback, emitCodeExecute, onCodeResult, emitClearFeedback, onClassroomTimerUpdated } from '../services/socket';
 import CodeEditor from './CodeEditor';
 import { analyzeStudentCode } from '../services/geminiService';
 import ClassroomManager from './ClassroomManager';
@@ -39,6 +39,14 @@ interface TeacherDashboardProps {
   onRefresh: () => void;
 }
 
+interface TeacherHistoryState {
+  codeclassTeacher: true;
+  activeTab: 'monitor' | 'assignments' | 'students' | 'classrooms';
+  selectedClassroomId: string | null;
+  selectedStudentId: string | null;
+  viewingSubmissionId: string | null;
+}
+
 const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ 
   students, 
   assignments, 
@@ -50,11 +58,17 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [viewingSubmission, setViewingSubmission] = useState<StudentData['submissions'][0] | null>(null);
   const [feedbackInput, setFeedbackInput] = useState('');
+  const historyReadyRef = useRef(false);
+  const restoringHistoryRef = useRef(false);
   
   // Classroom state
   const [classrooms, setClassrooms] = useState<ClassroomData[]>([]);
   const [selectedClassroom, setSelectedClassroom] = useState<ClassroomData | null>(null);
   const [showClassroomDropdown, setShowClassroomDropdown] = useState(false);
+  const [timerTitle, setTimerTitle] = useState('課堂倒數');
+  const [timerMinutes, setTimerMinutes] = useState('10');
+  const [isUpdatingTimer, setIsUpdatingTimer] = useState(false);
+  const [timerNow, setTimerNow] = useState(Date.now());
   
   // Assignment creation state
   const [newAssignmentTitle, setNewAssignmentTitle] = useState('');
@@ -71,18 +85,32 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         const result = await classroomApi.getAll();
         setClassrooms(result.classrooms || []);
       } catch (err) {
-        console.error('載入教室列表失敗:', err);
+        console.error('載入教室失敗:', err);
       }
     };
     loadClassrooms();
   }, []);
 
-  // 根據選擇的教室過濾學生
+  useEffect(() => {
+    const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    return onClassroomTimerUpdated((data) => {
+      setClassrooms(prev => prev.map(classroom =>
+        classroom.id === data.classroomId ? { ...classroom, timer: data.timer } : classroom
+      ));
+      setSelectedClassroom(prev =>
+        prev && prev.id === data.classroomId ? { ...prev, timer: data.timer } : prev
+      );
+    });
+  }, []);
+
   const filteredStudents = selectedClassroom 
     ? students.filter(s => s.classroomId === selectedClassroom.id)
     : students;
 
-  // 根據選擇的教室過濾作業
   const filteredAssignments = selectedClassroom
     ? assignments.filter(a => a.classroomId === selectedClassroom.id)
     : assignments;
@@ -100,17 +128,144 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [isCreatingAssignment, setIsCreatingAssignment] = useState(false);
 
   const selectedStudent = students.find(s => s.id === selectedStudentId);
+  const classroomTimer = selectedClassroom?.timer || null;
+  const classroomTimerRemainingMs = classroomTimer?.endsAt
+    ? Math.max(0, classroomTimer.endsAt - timerNow)
+    : 0;
+  const classroomTimerActive = !!classroomTimer?.endsAt && classroomTimerRemainingMs > 0;
+  const classroomTimerFinished = !!classroomTimer?.endsAt && classroomTimerRemainingMs <= 0;
 
-  // 發送反饋（只使用 Socket，避免重複）
+  const formatCountdown = (milliseconds: number) => {
+    const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value: number) => value.toString().padStart(2, '0');
+
+    return hours > 0
+      ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+      : `${minutes}:${pad(seconds)}`;
+  };
+
+  const updateClassroomTimerState = (updatedClassroom: ClassroomData) => {
+    setClassrooms(prev => prev.map(classroom =>
+      classroom.id === updatedClassroom.id ? updatedClassroom : classroom
+    ));
+    setSelectedClassroom(updatedClassroom);
+  };
+
+  const handleStartClassroomTimer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedClassroom) return;
+
+    const minutes = Number(timerMinutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      alert('請輸入有效的倒數分鐘數');
+      return;
+    }
+
+    setIsUpdatingTimer(true);
+    try {
+      const result = await classroomApi.startTimer(
+        selectedClassroom.id,
+        minutes,
+        timerTitle.trim() || '課堂倒數'
+      );
+      updateClassroomTimerState(result.classroom);
+    } catch (err: any) {
+      alert(err.message || '設定倒數失敗，請稍後再試');
+    } finally {
+      setIsUpdatingTimer(false);
+    }
+  };
+
+  const handleClearClassroomTimer = async () => {
+    if (!selectedClassroom) return;
+
+    setIsUpdatingTimer(true);
+    try {
+      const result = await classroomApi.clearTimer(selectedClassroom.id);
+      updateClassroomTimerState(result.classroom);
+    } catch (err: any) {
+      alert(err.message || '清除倒數失敗，請稍後再試');
+    } finally {
+      setIsUpdatingTimer(false);
+    }
+  };
+
+  // 同步老師端畫面到瀏覽器歷史，方便側鍵返回上一個畫面。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const state: TeacherHistoryState = {
+      codeclassTeacher: true,
+      activeTab,
+      selectedClassroomId: selectedClassroom?.id || null,
+      selectedStudentId,
+      viewingSubmissionId: viewingSubmission?.id || null
+    };
+
+    if (!historyReadyRef.current) {
+      window.history.replaceState(state, '');
+      historyReadyRef.current = true;
+      return;
+    }
+
+    if (restoringHistoryRef.current) {
+      window.history.replaceState(state, '');
+      restoringHistoryRef.current = false;
+      return;
+    }
+
+    window.history.pushState(state, '');
+  }, [activeTab, selectedClassroom?.id, selectedStudentId, viewingSubmission?.id]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state as TeacherHistoryState | null;
+      if (!state?.codeclassTeacher) return;
+
+      restoringHistoryRef.current = true;
+      const classroom = classrooms.find(item => item.id === state.selectedClassroomId) || null;
+      const student = students.find(item => item.id === state.selectedStudentId);
+      const submission = student?.submissions.find(item => item.id === state.viewingSubmissionId) || null;
+
+      setActiveTab(state.activeTab);
+      setSelectedClassroom(classroom);
+      setSelectedStudentId(state.selectedStudentId);
+      setViewingSubmission(submission);
+      setAiAnalysis(null);
+      setExecutionResult(null);
+      setShowClassroomDropdown(false);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [classrooms, students]);
+
   const handleSendFeedback = () => {
     if (!selectedStudent || !feedbackInput.trim()) return;
 
-    // 只通過 Socket 發送（後端會保存並廣播）
     emitFeedback(selectedStudent.id, feedbackInput);
     setFeedbackInput('');
   };
 
-  // 創建作業
+
+  const handleClearHelpRequest = async (studentId: string) => {
+    try {
+      const result = await studentApi.clearHelpRequest(studentId);
+      onUpdateStudents(students.map(student =>
+        student.id === studentId
+          ? { ...student, handRaised: result.handRaised, handRaisedAt: result.handRaisedAt }
+          : student
+      ));
+    } catch (err: any) {
+      alert(err.message || '清除舉手狀態失敗，請稍後再試');
+    }
+  };
+  // 新增作業
   const handleCreateAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAssignmentTitle.trim()) return;
@@ -122,23 +277,22 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         newAssignmentTitle, 
         newAssignmentDesc, 
         dueDate,
-        selectedClassroom?.id // 關聯到當前選擇的教室
+        selectedClassroom?.id // 發布到目前選取的教室
       );
       
       onUpdateAssignments([newAssignment, ...assignments]);
       setNewAssignmentTitle('');
       setNewAssignmentDesc('');
       setNewAssignmentDueDate('');
-      alert('作業已發布！');
+      alert('作業已新增');
     } catch (err) {
       console.error('Failed to create assignment:', err);
-      alert('創建失敗，請重試');
+      alert('新增失敗，請稍後再試');
     } finally {
       setIsCreatingAssignment(false);
     }
   };
 
-  // 切換作業開放狀態
   const handleToggleAssignment = async (assignmentId: string) => {
     try {
       await assignmentApi.toggle(assignmentId);
@@ -152,7 +306,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   // 刪除作業
   const handleDeleteAssignment = async (assignmentId: string) => {
-    if (!window.confirm('確定要刪除此作業嗎？')) return;
+    if (!window.confirm('確定要刪除這份作業嗎？')) return;
     
     try {
       await assignmentApi.delete(assignmentId);
@@ -162,7 +316,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }
   };
 
-  // 添加學生
+  // 新增學生
   const handleAddNewStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudentName.trim()) return;
@@ -171,12 +325,12 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     try {
       const newStudent = await studentApi.create(
         newStudentName.trim(),
-        selectedClassroom?.id // 關聯到當前選擇的教室
+        selectedClassroom?.id // 加入目前選取的教室
       );
       onUpdateStudents([...students, newStudent]);
       setNewStudentName('');
     } catch (err: any) {
-      alert(err.message || '創建失敗');
+      alert(err.message || '新增學生失敗，請稍後再試');
     } finally {
       setIsCreatingStudent(false);
     }
@@ -186,7 +340,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const handleRemoveStudent = async (studentId: string) => {
     const student = students.find(s => s.id === studentId);
     if (!student) return;
-    if (!window.confirm(`確定要移除學生「${student.name}」嗎？`)) return;
+    if (!window.confirm(`確定要刪除學生「${student.name}」嗎？`)) return;
     
     try {
       await studentApi.delete(studentId);
@@ -196,18 +350,18 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }
   };
 
-  // 重置學生密碼
+  // 重設學生密碼
   const handleResetPassword = async (studentId: string) => {
     const student = students.find(s => s.id === studentId);
     if (!student) return;
-    if (!window.confirm(`確定要重置「${student.name}」的密碼嗎？`)) return;
+    if (!window.confirm(`確定要重設「${student.name}」的密碼嗎？`)) return;
     
     try {
       await studentApi.resetPassword(studentId);
       onUpdateStudents(students.map(s => 
         s.id === studentId ? { ...s, isPasswordSet: false } : s
       ));
-      alert('密碼已重置，學生下次登入時需重新設置');
+      alert('密碼已重設，學生下次登入需要重新設定密碼');
     } catch (err) {
       console.error('Failed to reset password:', err);
     }
@@ -221,7 +375,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     
     const codeToAnalyze = viewingSubmission ? viewingSubmission.code : selectedStudent.currentCode;
     
-    let assignmentContext = "一般程式練習";
+    let assignmentContext = '未指定作業內容';
     if (viewingSubmission) {
       const subAssignment = assignments.find(a => a.id === viewingSubmission.assignmentId);
       if (subAssignment) assignmentContext = subAssignment.description;
@@ -237,7 +391,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setIsAnalyzing(false);
   };
 
-  // 執行代碼
+  // 執行程式
   const handleExecuteCode = () => {
     if (!selectedStudent) return;
     
@@ -256,10 +410,10 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     
     emitCodeExecute(selectedStudent.id, codeToExecute, language);
     
-    // 超時處理
+    // 頞???
     setTimeout(() => {
       if (isExecuting) {
-        setExecutionResult({ output: '', error: '執行超時' });
+        setExecutionResult({ output: '', error: '執行逾時' });
         setIsExecuting(false);
       }
     }, 15000);
@@ -273,7 +427,6 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setExecutionResult(null);
   };
 
-  // 格式化時間
   const formatDate = (timestamp: number) => {
     return new Date(timestamp).toLocaleDateString('zh-TW', {
       year: 'numeric',
@@ -284,11 +437,53 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     });
   };
 
-  // 檢查是否過期
+  // 瑼Ｘ?臬??
   const isOverdue = (dueDate?: number | null) => {
     if (!dueDate) return false;
     return Date.now() > dueDate;
   };
+
+  if (!selectedClassroom && classrooms.length > 0) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center p-6">
+        <div className="w-full max-w-4xl">
+          <div className="mb-8">
+            <h1 className="text-3xl font-bold text-white flex items-center gap-3">
+              <School className="text-indigo-400" />
+              選擇要進入的教室
+            </h1>
+            <p className="text-gray-400 mt-2">
+              進入老師頁面前，先選擇這堂課要監看的教室；之後仍可在左上角切換。
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            {classrooms.map(classroom => (
+              <button
+                key={classroom.id}
+                onClick={() => setSelectedClassroom(classroom)}
+                className="text-left bg-gray-800 border border-gray-700 hover:border-indigo-400 hover:bg-gray-700 rounded-lg p-5 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-bold text-white">{classroom.name}</h2>
+                    {classroom.description && (
+                      <p className="text-sm text-gray-400 mt-1 line-clamp-2">{classroom.description}</p>
+                    )}
+                  </div>
+                  <School size={22} className="text-indigo-400 shrink-0" />
+                </div>
+                <div className="mt-5 flex items-center gap-4 text-sm text-gray-400">
+                  <span>{classroom.studentCount} 位學生</span>
+                  <span>{classroom.assignmentCount} 份作業</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 overflow-hidden">
@@ -299,9 +494,9 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <Users size={24} className="text-blue-400" />
             老師控制台
           </h1>
-          <p className="text-xs text-gray-500 mt-1">管理課堂與監控學生</p>
+          <p className="text-xs text-gray-500 mt-1">即時監看學生練習狀態</p>
           
-          {/* 教室選擇下拉框 */}
+          {/* 教室選擇 */}
           <div className="mt-4 relative">
             <button
               onClick={() => setShowClassroomDropdown(!showClassroomDropdown)}
@@ -309,21 +504,13 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             >
               <span className="flex items-center gap-2 truncate">
                 <School size={16} className="text-indigo-400" />
-                {selectedClassroom ? selectedClassroom.name : '全部教室'}
+                {selectedClassroom ? selectedClassroom.name : '選擇教室'}
               </span>
               <ChevronDown size={16} className={`text-gray-400 transition-transform ${showClassroomDropdown ? 'rotate-180' : ''}`} />
             </button>
             
             {showClassroomDropdown && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
-                <button
-                  onClick={() => { setSelectedClassroom(null); setShowClassroomDropdown(false); }}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-600 transition-colors ${
-                    !selectedClassroom ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-300'
-                  }`}
-                >
-                  全部教室
-                </button>
                 {classrooms.map(classroom => (
                   <button
                     key={classroom.id}
@@ -344,6 +531,69 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             )}
           </div>
+
+          <form
+            onSubmit={handleStartClassroomTimer}
+            className="mt-4 rounded-lg border border-gray-700 bg-gray-900/50 p-3 space-y-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-sm font-semibold text-gray-200">
+                <Clock size={16} className="text-cyan-300" />
+                教室倒數
+              </span>
+              {classroomTimer && (
+                <span className={`text-xs font-bold ${classroomTimerActive ? 'text-cyan-300' : 'text-red-300'}`}>
+                  {classroomTimerActive ? formatCountdown(classroomTimerRemainingMs) : '時間到'}
+                </span>
+              )}
+            </div>
+
+            <input
+              value={timerTitle}
+              onChange={(e) => setTimerTitle(e.target.value)}
+              className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-cyan-500"
+              placeholder="倒數名稱，例如：小練習"
+            />
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <input
+                type="number"
+                min={1}
+                max={600}
+                value={timerMinutes}
+                onChange={(e) => setTimerMinutes(e.target.value)}
+                className="min-w-0 rounded bg-gray-800 border border-gray-700 px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-cyan-500"
+                placeholder="分鐘"
+              />
+              <button
+                type="submit"
+                disabled={!selectedClassroom || isUpdatingTimer}
+                className="rounded bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold text-white"
+              >
+                開始
+              </button>
+            </div>
+
+            {classroomTimer && (
+              <div className={`rounded border px-2 py-1.5 text-xs ${
+                classroomTimerFinished
+                  ? 'border-red-500/40 bg-red-900/30 text-red-200'
+                  : 'border-cyan-500/30 bg-cyan-900/20 text-cyan-100'
+              }`}>
+                <div className="font-semibold truncate">{classroomTimer.title}</div>
+                <div className="mt-0.5 text-[11px] opacity-80">
+                  {classroomTimerFinished ? '已結束，學生端仍會看到時間到提示。' : `剩餘 ${formatCountdown(classroomTimerRemainingMs)}`}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearClassroomTimer}
+                  disabled={isUpdatingTimer}
+                  className="mt-2 w-full rounded border border-gray-600 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+                >
+                  清除倒數
+                </button>
+              </div>
+            )}
+          </form>
         </div>
         <nav className="flex-1 p-4 space-y-2">
           <button
@@ -353,7 +603,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             }`}
           >
             <LayoutGrid size={20} />
-            即時監控
+            即時監看
           </button>
           <button
             onClick={() => { setActiveTab('assignments'); setSelectedStudentId(null); setViewingSubmission(null); }}
@@ -384,18 +634,18 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </button>
         </nav>
 
-        {/* 統計信息 */}
+        {/* 統計資訊 */}
         <div className="p-4 border-t border-gray-700 space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">在線學生</span>
             <span className="text-green-400 font-bold">{students.filter(s => s.isOnline).length}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-gray-500">總學生數</span>
+            <span className="text-gray-500">目前學生</span>
             <span className="text-gray-300 font-bold">{filteredStudents.length}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-gray-500">進行中作業</span>
+            <span className="text-gray-500">開放作業</span>
             <span className="text-blue-400 font-bold">{assignments.filter(a => a.isOpen).length}</span>
           </div>
         </div>
@@ -404,22 +654,22 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         
-        {/* ===================== 即時監控視圖 ===================== */}
+        {/* ===================== 即時監看 ===================== */}
         {activeTab === 'monitor' && (
           <div className="flex-1 flex overflow-hidden">
             {/* Student List / Grid */}
             <div className={`flex-1 overflow-y-auto p-6 ${selectedStudentId ? 'hidden lg:block lg:w-1/3 lg:flex-none border-r border-gray-700' : ''}`}>
               <h2 className="text-2xl font-bold mb-6 flex items-center gap-3">
                 <span className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
-                學生監控 ({filteredStudents.length})
+                學生監看 ({filteredStudents.length})
                 {selectedClassroom && <span className="text-sm font-normal text-indigo-400">- {selectedClassroom.name}</span>}
               </h2>
               
               {filteredStudents.length === 0 ? (
                 <div className="text-center py-20 text-gray-500">
                   <Users size={48} className="mx-auto mb-4 opacity-30" />
-                  <p>尚無學生資料</p>
-                  <p className="text-sm mt-2">請前往「學生管理」新增學生</p>
+                  <p>目前沒有學生資料</p>
+                  <p className="text-sm mt-2">請先新增學生，或切換到其他教室。</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -433,9 +683,19 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         setExecutionResult(null);
                       }}
                       className={`cursor-pointer group relative bg-gray-800 rounded-xl border-2 transition-all p-4 hover:shadow-xl ${
-                        selectedStudentId === student.id ? 'border-blue-500 bg-gray-800/80' : 'border-gray-700 hover:border-gray-500'
+                        student.handRaised
+                          ? 'border-yellow-400 bg-yellow-900/30 shadow-lg shadow-yellow-500/20'
+                          : selectedStudentId === student.id
+                            ? 'border-blue-500 bg-gray-800/80'
+                            : 'border-gray-700 hover:border-gray-500'
                       }`}
                     >
+                      {student.handRaised && (
+                        <div className="absolute -top-2 -right-2 flex items-center gap-1 rounded-full bg-yellow-500 px-2 py-1 text-xs font-bold text-gray-950 shadow-lg">
+                          <AlertCircle size={12} />
+                          舉手
+                        </div>
+                      )}
                       <div className="flex justify-between items-center mb-3">
                         <div className="flex items-center gap-2">
                           <span className={`w-2 h-2 rounded-full ${student.isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-600'}`}></span>
@@ -472,12 +732,27 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 <div className="h-16 bg-gray-800 border-b border-gray-700 flex justify-between items-center px-6 shrink-0">
                   <div className="flex items-center gap-3">
                     <button onClick={() => setSelectedStudentId(null)} className="lg:hidden text-gray-400 hover:text-white">
-                      ← 返回
+                      返回列表
                     </button>
                     <span className={`w-2 h-2 rounded-full ${selectedStudent.isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-600'}`}></span>
                     <span className="font-bold text-xl">{selectedStudent.name}</span>
+                    {selectedStudent.handRaised && (
+                      <span className="flex items-center gap-1 rounded-full bg-yellow-500/20 border border-yellow-400 px-2 py-1 text-xs font-bold text-yellow-300">
+                        <AlertCircle size={12} />
+                        正在舉手
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-2">
+                    {selectedStudent.handRaised && (
+                      <button
+                        onClick={() => handleClearHelpRequest(selectedStudent.id)}
+                        className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm bg-yellow-600 hover:bg-yellow-700 text-white transition-all"
+                      >
+                        <AlertCircle size={16} />
+                        已處理
+                      </button>
+                    )}
                     <button 
                       onClick={handleExecuteCode}
                       disabled={isExecuting}
@@ -507,14 +782,14 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       <div className="bg-amber-900/40 border-b border-amber-700/50 p-2 px-4 flex justify-between items-center text-amber-200 text-xs shadow-md z-10 shrink-0">
                         <span className="flex items-center gap-2">
                           <Clock size={14} />
-                          <strong>快照模式：</strong> 
-                          正在查看「{assignments.find(a => a.id === viewingSubmission.assignmentId)?.title}」
+                          <strong>正在查看提交：</strong>
+                          {assignments.find(a => a.id === viewingSubmission.assignmentId)?.title || '未命名作業'}
                         </span>
                         <button 
                           onClick={() => setViewingSubmission(null)} 
                           className="flex items-center gap-1 hover:text-white underline"
                         >
-                          <RotateCcw size={12} /> 返回即時
+                          <RotateCcw size={12} /> 回到即時畫面
                         </button>
                       </div>
                     ) : (
@@ -545,7 +820,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         {executionResult.error ? (
                           <pre className="text-red-400 text-sm font-mono whitespace-pre-wrap">{executionResult.error}</pre>
                         ) : (
-                          <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap">{executionResult.output || '(無輸出)'}</pre>
+                          <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap">{executionResult.output || '(沒有輸出)'}</pre>
                         )}
                       </div>
                     )}
@@ -584,7 +859,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             >
                               <div className="flex-1 min-w-0">
                                 <p className={`font-semibold truncate ${isViewing ? 'text-amber-300' : 'text-blue-300'}`}>
-                                  {assignment?.title || '未知作業'}
+                                  {assignment?.title || '未命名作業'}
                                 </p>
                                 <p className="text-gray-400">{formatDate(sub.timestamp)}</p>
                               </div>
@@ -604,19 +879,19 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <div className="flex-1 flex flex-col p-4 border-t border-gray-700 overflow-hidden">
                       <div className="flex items-center justify-between mb-2 shrink-0">
                         <h3 className="font-bold text-gray-300 flex items-center gap-2">
-                          <MessageSquare size={16}/> 即時留言
+                          <MessageSquare size={16}/> 師生對話
                         </h3>
                         {selectedStudent.feedbacks.length > 0 && (
                           <button
                             onClick={() => {
-                              if (window.confirm('確定要清空所有對話嗎？此操作無法復原。')) {
+                              if (window.confirm('確定要清除這位學生的所有對話嗎？')) {
                                 emitClearFeedback(selectedStudent.id);
                               }
                             }}
                             className="text-xs text-gray-500 hover:text-red-400 flex items-center gap-1"
-                            title="清空對話"
+                            title="清除對話"
                           >
-                            <Trash2 size={12} /> 清空
+                            <Trash2 size={12} /> 清除
                           </button>
                         )}
                       </div>
@@ -634,7 +909,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             }`}
                           >
                             <div className="flex items-center gap-1 mb-1 text-[10px] opacity-60">
-                              {fb.fromTeacher ? '👨‍🏫 我' : '👨‍🎓 學生'}
+                              {fb.fromTeacher ? '老師' : '學生'}
                             </div>
                             <p className="text-gray-300">{fb.message}</p>
                             <p className="text-[10px] text-gray-500 text-right mt-1">
@@ -648,7 +923,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           type="text"
                           value={feedbackInput}
                           onChange={(e) => setFeedbackInput(e.target.value)}
-                          placeholder="輸入留言..."
+                          placeholder="輸入訊息..."
                           className="flex-1 bg-gray-700 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                           onKeyDown={(e) => e.key === 'Enter' && handleSendFeedback()}
                         />
@@ -668,14 +943,14 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         )}
 
-        {/* ===================== 作業管理視圖 ===================== */}
+        {/* ===================== 作業管理 ===================== */}
         {activeTab === 'assignments' && (
           <div className="flex-1 p-8 overflow-y-auto">
             <div className="max-w-4xl mx-auto">
               {/* Create Assignment */}
               <div className="bg-gray-800 rounded-xl p-6 mb-8 border border-gray-700">
                 <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-blue-400">
-                  <FilePlus size={24}/> 發布新作業
+                  <FilePlus size={24}/> 新增作業
                   {selectedClassroom && <span className="text-sm font-normal text-indigo-400">- 發布到 {selectedClassroom.name}</span>}
                 </h2>
                 <form onSubmit={handleCreateAssignment} className="space-y-4">
@@ -696,12 +971,12 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       value={newAssignmentDesc}
                       onChange={(e) => setNewAssignmentDesc(e.target.value)}
                       className="w-full h-32 bg-gray-900 border border-gray-600 rounded-lg p-3 focus:border-blue-500 outline-none resize-none"
-                      placeholder="請說明作業要求..."
+                      placeholder="請輸入題目、規則或補充說明..."
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-400 mb-1 flex items-center gap-2">
-                      <Calendar size={14} /> 截止日期（選填）
+                      <Calendar size={14} /> 截止時間（可選）
                     </label>
                     <input 
                       type="datetime-local" 
@@ -717,7 +992,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-medium flex items-center gap-2"
                     >
                       {isCreatingAssignment && <Loader2 className="animate-spin" size={18} />}
-                      發布作業
+                      新增作業
                     </button>
                   </div>
                 </form>
@@ -725,13 +1000,13 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
               {/* Assignment List */}
               <h3 className="text-xl font-bold mb-4 text-gray-300">
-                所有作業 ({filteredAssignments.length})
+                目前作業 ({filteredAssignments.length})
                 {selectedClassroom && <span className="text-sm font-normal text-indigo-400 ml-2">- {selectedClassroom.name}</span>}
               </h3>
               {filteredAssignments.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
                   <CheckSquare size={48} className="mx-auto mb-4 opacity-30" />
-                  <p>尚未發布任何作業</p>
+                  <p>目前沒有作業</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -755,7 +1030,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             </div>
                             <p className="text-gray-400 text-sm whitespace-pre-wrap mb-2">{assign.description}</p>
                             <div className="flex items-center gap-4 text-xs text-gray-500">
-                              <span>建立於：{formatDate(assign.createdAt)}</span>
+                              <span>建立：{formatDate(assign.createdAt)}</span>
                               {assign.dueDate && (
                                 <span className={overdue ? 'text-red-400' : ''}>
                                   截止：{formatDate(assign.dueDate)}
@@ -767,7 +1042,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           <div className="flex items-start gap-4 ml-4">
                             <div className="text-center bg-gray-900 p-3 rounded-lg border border-gray-700 min-w-[100px]">
                               <div className="text-2xl font-bold text-blue-400">{assign.submissionCount} / {assign.totalStudents}</div>
-                              <div className="text-xs text-gray-500 uppercase font-bold">已繳交</div>
+                              <div className="text-xs text-gray-500 uppercase font-bold">提交</div>
                             </div>
                             
                             <div className="flex flex-col gap-2">
@@ -795,7 +1070,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         {/* Submitters */}
                         {assign.submitters.length > 0 && (
                           <div className="bg-gray-900/50 p-3 border-t border-gray-700">
-                            <p className="text-xs font-bold text-gray-500 uppercase mb-2">已繳交學生：</p>
+                            <p className="text-xs font-bold text-gray-500 uppercase mb-2">已提交學生</p>
                             <div className="flex flex-wrap gap-2">
                               {assign.submitters.map((submitter, idx) => {
                                 const student = students.find(s => s.id === submitter.studentId);
@@ -827,7 +1102,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         )}
 
-        {/* ===================== 學生管理視圖 ===================== */}
+        {/* ===================== 學生管理 ===================== */}
         {activeTab === 'students' && (
           <div className="flex-1 p-8 overflow-y-auto">
             <div className="max-w-3xl mx-auto">
@@ -858,13 +1133,13 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
               {/* Student List */}
               <h3 className="text-xl font-bold mb-4 text-gray-300">
-                學生名單 ({filteredStudents.length})
+                學生列表 ({filteredStudents.length})
                 {selectedClassroom && <span className="text-sm font-normal text-indigo-400 ml-2">- {selectedClassroom.name}</span>}
               </h3>
               {filteredStudents.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
                   <Users size={48} className="mx-auto mb-4 opacity-30" />
-                  <p>尚無學生資料</p>
+                  <p>目前沒有學生資料</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -887,7 +1162,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </span>
                             )}
                             {!student.isPasswordSet && (
-                              <span className="text-xs text-yellow-400">(未設密碼)</span>
+                              <span className="text-xs text-yellow-400">(尚未設定密碼)</span>
                             )}
                           </div>
                           <div className="flex items-center gap-4 text-xs text-gray-500 mt-1">
@@ -904,21 +1179,21 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             setActiveTab('monitor');
                           }}
                           className="p-2 bg-blue-900/30 text-blue-400 rounded-lg hover:bg-blue-900/50"
-                          title="查看詳情"
+                          title="查看即時畫面"
                         >
                           <Eye size={18} />
                         </button>
                         <button
                           onClick={() => handleResetPassword(student.id)}
                           className="p-2 bg-yellow-900/30 text-yellow-400 rounded-lg hover:bg-yellow-900/50"
-                          title="重置密碼"
+                          title="重設密碼"
                         >
                           <Key size={18} />
                         </button>
                         <button
                           onClick={() => handleRemoveStudent(student.id)}
                           className="p-2 bg-red-900/30 text-red-400 rounded-lg hover:bg-red-900/50"
-                          title="移除學生"
+                          title="刪除學生"
                         >
                           <UserMinus size={18} />
                         </button>
@@ -931,7 +1206,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         )}
 
-        {/* ===================== 教室管理視圖 ===================== */}
+        {/* ===================== 教室管理 ===================== */}
         {activeTab === 'classrooms' && (
           <div className="flex-1 p-8 overflow-y-auto">
             <div className="max-w-4xl mx-auto">
@@ -940,7 +1215,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 教室管理
               </h2>
               <p className="text-gray-400 mb-6">
-                創建不同的教室來管理不同班級的學生和作業。每個教室可以有獨立的學生名單和作業。
+                建立與管理教室。學生與作業會依教室分組，老師可從左上角切換目前監看的教室。
               </p>
               
               <ClassroomManager

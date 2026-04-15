@@ -14,7 +14,7 @@ assignmentRoutes.get('/', (req, res) => {
   
   const result = assignments.map(a => {
     const submissions = submissionOperations.getByAssignment(a.id);
-    const students = userOperations.getAllStudents();
+    const totalStudents = userOperations.getStudentCountByClassroom(a.classroom_id);
     
     return {
       id: a.id,
@@ -25,7 +25,7 @@ assignmentRoutes.get('/', (req, res) => {
       isOpen: !!a.is_open,
       createdAt: a.created_at,
       submissionCount: submissions.length,
-      totalStudents: students.length,
+      totalStudents,
       submitters: submissions.map(s => ({
         studentId: s.student_id,
         studentName: s.student_name,
@@ -61,7 +61,7 @@ assignmentRoutes.post('/', (req, res) => {
     isOpen: true,
     createdAt: assignment.created_at,
     submissionCount: 0,
-    totalStudents: userOperations.getAllStudents().length,
+    totalStudents: userOperations.getStudentCountByClassroom(assignment.classroom_id),
     submitters: []
   };
   

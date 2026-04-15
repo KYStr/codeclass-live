@@ -79,6 +79,14 @@ export const authApi = {
 
 // ==================== 學生 API ====================
 
+export interface ClassroomTimerData {
+  classroomId: string;
+  title: string;
+  startedAt: number | null;
+  endsAt: number | null;
+  isActive: boolean;
+}
+
 export interface StudentData {
   id: string;
   name: string;
@@ -88,6 +96,9 @@ export interface StudentData {
   isOnline: boolean;
   isPasswordSet: boolean;
   lastActive: number;
+  handRaised: boolean;
+  handRaisedAt?: number | null;
+  classroomTimer?: ClassroomTimerData | null;
   feedbacks: {
     id: string;
     message: string;
@@ -103,6 +114,38 @@ export interface StudentData {
     timestamp: number;
     status: string;
   }[];
+}
+
+export interface ProjectData {
+  id: string;
+  studentId: string;
+  name: string;
+  code: string;
+  language: string;
+  folderId?: string | null;
+  sourceAssignmentId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectFolderData {
+  id: string;
+  studentId: string;
+  name: string;
+  parentId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AiTutorMessageData {
+  id: string;
+  studentId: string;
+  projectId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  contextUrl?: string | null;
+  attachmentName?: string | null;
+  createdAt: number;
 }
 
 export const studentApi = {
@@ -149,11 +192,80 @@ export const studentApi = {
     }),
   
   // 提交作業
+  raiseHelpRequest: (id: string) =>
+    request<{ studentId: string; studentName: string; handRaised: boolean; handRaisedAt: number | null }>(`/students/${id}/help-request`, {
+      method: 'POST',
+    }),
+
+  clearHelpRequest: (id: string) =>
+    request<{ studentId: string; studentName: string; handRaised: boolean; handRaisedAt: number | null }>(`/students/${id}/help-request/clear`, {
+      method: 'POST',
+    }),
+
   submitAssignment: (id: string, assignmentId: string, code: string, language: string) =>
-    request<{ id: string; assignmentId: string; code: string; timestamp: number }>(`/students/${id}/submit`, {
+    request<{ id: string; assignmentId: string; code: string; language: string; timestamp: number; status: string }>(`/students/${id}/submit`, {
       method: 'POST',
       body: JSON.stringify({ assignmentId, code, language }),
     }),
+
+  getProjects: (id: string) =>
+    request<ProjectData[]>(`/students/${id}/projects`),
+
+  createProject: (id: string, name: string, code: string, language: string, sourceAssignmentId?: string | null, folderId?: string | null) =>
+    request<ProjectData>(`/students/${id}/projects`, {
+      method: 'POST',
+      body: JSON.stringify({ name, code, language, sourceAssignmentId, folderId }),
+    }),
+
+  updateProject: (id: string, projectId: string, data: Partial<Pick<ProjectData, 'name' | 'code' | 'language' | 'folderId'>>) =>
+    request<ProjectData>(`/students/${id}/projects/${projectId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteProject: (id: string, projectId: string) =>
+    request<{ success: boolean }>(`/students/${id}/projects/${projectId}`, { method: 'DELETE' }),
+
+  getProjectAiMessages: (id: string, projectId: string) =>
+    request<AiTutorMessageData[]>(`/students/${id}/projects/${projectId}/ai/messages`),
+
+  sendProjectAiMessage: (
+    id: string,
+    projectId: string,
+    data: {
+      message: string;
+      language: string;
+      code: string;
+      assignmentDescription?: string;
+      contextUrl?: string;
+      screenshot?: { name: string; dataUrl: string } | null;
+    }
+  ) =>
+    request<{ userMessage: AiTutorMessageData; assistantMessage: AiTutorMessageData; thinkingSummary?: string }>(
+      `/students/${id}/projects/${projectId}/ai/messages`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    ),
+
+  getProjectFolders: (id: string) =>
+    request<ProjectFolderData[]>(`/students/${id}/project-folders`),
+
+  createProjectFolder: (id: string, name: string, parentId?: string | null) =>
+    request<ProjectFolderData>(`/students/${id}/project-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ name, parentId }),
+    }),
+
+  updateProjectFolder: (id: string, folderId: string, data: Partial<Pick<ProjectFolderData, 'name' | 'parentId'>>) =>
+    request<ProjectFolderData>(`/students/${id}/project-folders/${folderId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteProjectFolder: (id: string, folderId: string) =>
+    request<{ success: boolean }>(`/students/${id}/project-folders/${folderId}`, { method: 'DELETE' }),
   
   // 標記反饋已讀
   markFeedbackRead: (id: string) =>
@@ -215,6 +327,7 @@ export interface ClassroomData {
   created_at: number;
   studentCount: number;
   assignmentCount: number;
+  timer?: ClassroomTimerData | null;
 }
 
 export const classroomApi = {
@@ -241,6 +354,19 @@ export const classroomApi = {
   // 刪除教室
   delete: (id: string) =>
     request<{ success: boolean }>(`/classrooms/${id}`, { method: 'DELETE' }),
+
+  // 設定整間教室倒數
+  startTimer: (id: string, minutes: number, title?: string) =>
+    request<{ success: boolean; classroom: ClassroomData; timer: ClassroomTimerData | null }>(`/classrooms/${id}/timer`, {
+      method: 'POST',
+      body: JSON.stringify({ minutes, title }),
+    }),
+
+  // 清除整間教室倒數
+  clearTimer: (id: string) =>
+    request<{ success: boolean; classroom: ClassroomData; timer: null }>(`/classrooms/${id}/timer/clear`, {
+      method: 'POST',
+    }),
   
   // 獲取教室學生
   getStudents: (id: string) =>

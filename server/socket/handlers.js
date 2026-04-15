@@ -20,7 +20,9 @@ export function setupSocketHandlers(io) {
         name: s.name,
         currentCode: s.current_code || '',
         currentLanguage: s.current_language || 'python',
-        isOnline: !!s.is_online
+        isOnline: !!s.is_online,
+        handRaised: !!s.hand_raised,
+        handRaisedAt: s.hand_raised_at || null
       })));
     });
 

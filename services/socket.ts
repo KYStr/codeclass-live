@@ -2,16 +2,20 @@ import { io, Socket } from 'socket.io-client';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 
-// Socket 實例
+// Socket 撖虫?
 let socket: Socket | null = null;
+let currentJoin:
+  | { role: 'teacher' }
+  | { role: 'student'; studentId: string }
+  | null = null;
 
-// 事件回調類型
+// 鈭辣?矽憿?
 type EventCallback = (...args: any[]) => void;
 
-// 事件監聽器存儲
+// 鈭辣???典???
 const listeners: Map<string, Set<EventCallback>> = new Map();
 
-// 獲取或創建 Socket 連接
+// ?脣??撱?Socket ??
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(SOCKET_URL, {
@@ -21,24 +25,29 @@ export function getSocket(): Socket {
       reconnectionDelay: 1000,
     });
 
-    // 連接事件
+    // ??鈭辣
     socket.on('connect', () => {
-      console.log('🔌 Socket 已連接:', socket?.id);
+      console.log('Socket connected:', socket?.id);
+      if (currentJoin?.role === 'teacher') {
+        socket?.emit('teacher:join');
+      } else if (currentJoin?.role === 'student') {
+        socket?.emit('student:join', { studentId: currentJoin.studentId });
+      }
     });
 
     socket.on('disconnect', (reason) => {
-      console.log('❌ Socket 斷開:', reason);
+      console.log('??Socket ?琿?:', reason);
     });
 
     socket.on('connect_error', (error) => {
-      console.error('⚠️ Socket 連接錯誤:', error.message);
+      console.error('?? Socket ???航炊:', error.message);
     });
   }
 
   return socket;
 }
 
-// 連接 Socket
+// ?? Socket
 export function connectSocket(): void {
   const s = getSocket();
   if (!s.connected) {
@@ -46,80 +55,83 @@ export function connectSocket(): void {
   }
 }
 
-// 斷開 Socket
+// ?琿? Socket
 export function disconnectSocket(): void {
   if (socket) {
     socket.disconnect();
     socket = null;
     listeners.clear();
+    currentJoin = null;
   }
 }
 
-// 老師加入
+// ?葦?
 export function teacherJoin(): void {
   const s = getSocket();
-  s.emit('teacher:join');
+  currentJoin = { role: 'teacher' };
+  if (s.connected) s.emit('teacher:join');
 }
 
-// 學生加入
+// 摮貊??
 export function studentJoin(studentId: string): void {
   const s = getSocket();
-  s.emit('student:join', { studentId });
+  currentJoin = { role: 'student', studentId };
+  if (s.connected) s.emit('student:join', { studentId });
 }
 
-// 發送代碼更新
+// ?潮誨蝣潭??
 export function emitCodeUpdate(studentId: string, code: string, language: string): void {
   const s = getSocket();
   s.emit('code:update', { studentId, code, language });
 }
 
-// 發送反饋
+// ?潮?擖?
 export function emitFeedback(studentId: string, message: string): void {
   const s = getSocket();
   s.emit('feedback:send', { studentId, message });
 }
 
-// 執行代碼（支持輸入）
+// ?瑁?隞?Ⅳ嚗?撓?伐?
 export function emitCodeExecute(studentId: string | null, code: string, language: string, stdin: string = ''): void {
   const s = getSocket();
   s.emit('code:execute', { studentId, code, language, stdin });
 }
 
-// 學生發送消息
+// 摮貊??潮???
 export function emitStudentMessage(studentId: string, message: string): void {
   const s = getSocket();
   s.emit('student:message', { studentId, message });
 }
 
-// 清空對話
+// 皜征撠店
 export function emitClearFeedback(studentId: string): void {
   const s = getSocket();
   s.emit('feedback:clear', { studentId });
 }
 
-// 訂閱事件
+// 閮鈭辣
 export function onSocketEvent(event: string, callback: EventCallback): () => void {
   const s = getSocket();
   
-  // 添加到監聽器集合
+  // 瘛餃??啁?賢??
   if (!listeners.has(event)) {
     listeners.set(event, new Set());
   }
   listeners.get(event)!.add(callback);
   
-  // 註冊到 Socket
+  // 閮餃???Socket
   s.on(event, callback);
   
-  // 返回取消訂閱函數
+  // 餈???閮?賣
   return () => {
     s.off(event, callback);
     listeners.get(event)?.delete(callback);
   };
 }
 
-// ==================== 預定義事件類型 ====================
+// ==================== ??蝢拐?隞園???====================
 
-// 學生代碼更新事件
+// 摮貊?隞?Ⅳ?湔鈭辣
 export interface StudentCodeUpdateEvent {
   studentId: string;
   code: string;
@@ -127,13 +139,31 @@ export interface StudentCodeUpdateEvent {
   lastActive: number;
 }
 
-// 學生在線/離線事件
+// 摮貊??函?/?Ｙ?鈭辣
 export interface StudentOnlineEvent {
   studentId: string;
   name?: string;
 }
 
-// 反饋事件
+export interface StudentHelpRequestEvent {
+  studentId: string;
+  studentName: string;
+  handRaised: boolean;
+  handRaisedAt: number | null;
+}
+
+export interface ClassroomTimerEvent {
+  classroomId: string;
+  timer: {
+    classroomId: string;
+    title: string;
+    startedAt: number | null;
+    endsAt: number | null;
+    isActive: boolean;
+  } | null;
+}
+
+// ??鈭辣
 export interface FeedbackEvent {
   id: string;
   message: string;
@@ -142,7 +172,7 @@ export interface FeedbackEvent {
   fromTeacher: boolean;
 }
 
-// 代碼執行結果事件
+// 隞?Ⅳ?瑁?蝯?鈭辣
 export interface CodeResultEvent {
   success: boolean;
   output: string;
@@ -150,7 +180,7 @@ export interface CodeResultEvent {
   executionTime: number;
 }
 
-// 提交事件
+// ?漱鈭辣
 export interface SubmissionEvent {
   studentId: string;
   studentName: string;
@@ -164,16 +194,18 @@ export interface SubmissionEvent {
   };
 }
 
-// 學生同步事件
+// 摮貊??郊鈭辣
 export interface StudentSyncEvent {
   id: string;
   name: string;
   currentCode: string;
   currentLanguage: string;
   isOnline: boolean;
+  handRaised?: boolean;
+  handRaisedAt?: number | null;
 }
 
-// ==================== 便捷訂閱函數 ====================
+// ==================== 靘踵閮?賣 ====================
 
 export function onStudentCodeUpdate(callback: (data: StudentCodeUpdateEvent) => void): () => void {
   return onSocketEvent('student:code-update', callback);
@@ -185,6 +217,22 @@ export function onStudentOnline(callback: (data: StudentOnlineEvent) => void): (
 
 export function onStudentOffline(callback: (data: StudentOnlineEvent) => void): () => void {
   return onSocketEvent('student:offline', callback);
+}
+
+export function onStudentHelpRequest(callback: (data: StudentHelpRequestEvent) => void): () => void {
+  return onSocketEvent('student:help-request', callback);
+}
+
+export function onStudentHelpCleared(callback: (data: StudentHelpRequestEvent) => void): () => void {
+  return onSocketEvent('student:help-cleared', callback);
+}
+
+export function onStudentHelpStatus(callback: (data: StudentHelpRequestEvent) => void): () => void {
+  return onSocketEvent('student:help-status', callback);
+}
+
+export function onClassroomTimerUpdated(callback: (data: ClassroomTimerEvent) => void): () => void {
+  return onSocketEvent('classroom:timer-updated', callback);
 }
 
 export function onNewFeedback(callback: (data: FeedbackEvent) => void): () => void {
@@ -235,7 +283,7 @@ export function onStudentMessageNew(callback: (data: { studentId: string; feedba
   return onSocketEvent('student:message:new', callback);
 }
 
-// 對話清空事件
+// 撠店皜征鈭辣
 export function onFeedbackCleared(callback: (data: { studentId: string }) => void): () => void {
   return onSocketEvent('feedback:cleared', callback);
 }

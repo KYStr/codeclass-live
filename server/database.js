@@ -1,25 +1,47 @@
-import Database from 'better-sqlite3';
+﻿import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 
-// 創建數據庫連接
+// ?萄遣?豢?摨恍?
 export const db = new Database('codeclass.db');
+db.pragma('foreign_keys = ON');
 
-// 初始化數據庫表
+// ????澈銵?
 export function initDatabase() {
-  console.log('📦 初始化數據庫...');
+  console.log('Initializing database...');
 
-  // 教室表
+  // ?恕銵?
   db.exec(`
     CREATE TABLE IF NOT EXISTS classrooms (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      timer_title TEXT,
+      timer_started_at INTEGER,
+      timer_ends_at INTEGER,
       created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
     )
   `);
 
-  // 用戶表（老師和學生）
+  try {
+    db.exec('ALTER TABLE classrooms ADD COLUMN timer_title TEXT');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE classrooms ADD COLUMN timer_started_at INTEGER');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE classrooms ADD COLUMN timer_ends_at INTEGER');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  // ?冽銵剁??葦?飛??
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -35,14 +57,26 @@ export function initDatabase() {
     )
   `);
 
-  // 添加 classroom_id 列（如果不存在）
+  // 瘛餃? classroom_id ??憒?銝??剁?
   try {
     db.exec('ALTER TABLE users ADD COLUMN classroom_id TEXT');
   } catch (e) {
-    // 列已存在，忽略錯誤
+    // ?歇摮嚗蕭?仿隤?
   }
 
-  // 學生代碼表
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN hand_raised INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN hand_raised_at INTEGER');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  // 摮貊?隞?Ⅳ銵?
   db.exec(`
     CREATE TABLE IF NOT EXISTS student_code (
       student_id TEXT PRIMARY KEY,
@@ -52,7 +86,7 @@ export function initDatabase() {
     )
   `);
 
-  // 反饋/留言表
+  // ??/??銵?
   db.exec(`
     CREATE TABLE IF NOT EXISTS feedbacks (
       id TEXT PRIMARY KEY,
@@ -65,7 +99,7 @@ export function initDatabase() {
     )
   `);
 
-  // 作業表
+  // 雿平銵?
   db.exec(`
     CREATE TABLE IF NOT EXISTS assignments (
       id TEXT PRIMARY KEY,
@@ -79,14 +113,14 @@ export function initDatabase() {
     )
   `);
 
-  // 添加 classroom_id 列到 assignments（如果不存在）
+  // 瘛餃? classroom_id ? assignments嚗???摮嚗?
   try {
     db.exec('ALTER TABLE assignments ADD COLUMN classroom_id TEXT');
   } catch (e) {
-    // 列已存在，忽略錯誤
+    // ?歇摮嚗蕭?仿隤?
   }
 
-  // 提交表
+  // ?漱銵?
   db.exec(`
     CREATE TABLE IF NOT EXISTS submissions (
       id TEXT PRIMARY KEY,
@@ -101,7 +135,57 @@ export function initDatabase() {
     )
   `);
 
-  // 代碼執行歷史表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS student_project_folders (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES student_project_folders(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS student_projects (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      language TEXT NOT NULL DEFAULT 'python',
+      folder_id TEXT,
+      source_assignment_id TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (folder_id) REFERENCES student_project_folders(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_assignment_id) REFERENCES assignments(id) ON DELETE SET NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS student_ai_messages (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      context_url TEXT,
+      attachment_name TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES student_projects(id) ON DELETE CASCADE
+    )
+  `);
+
+  try {
+    db.exec('ALTER TABLE student_projects ADD COLUMN folder_id TEXT');
+  } catch (e) {
+    // Column already exists.
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS code_executions (
       id TEXT PRIMARY KEY,
@@ -116,7 +200,7 @@ export function initDatabase() {
     )
   `);
 
-  // 創建默認教室
+  // ?萄遣暺??恕
   const defaultClassroom = db.prepare('SELECT id FROM classrooms LIMIT 1').get();
   let defaultClassroomId;
   if (!defaultClassroom) {
@@ -125,12 +209,12 @@ export function initDatabase() {
       INSERT INTO classrooms (id, name, description)
       VALUES (?, ?, ?)
     `).run(defaultClassroomId, '預設教室', '系統預設教室');
-    console.log('✅ 已創建預設教室');
+    console.log('Created default classroom');
   } else {
     defaultClassroomId = defaultClassroom.id;
   }
 
-  // 創建默認老師帳戶
+  // ?萄遣暺??葦撣單
   const teacherExists = db.prepare('SELECT id FROM users WHERE role = ?').get('teacher');
   if (!teacherExists) {
     const passwordHash = bcrypt.hashSync('admin', 10);
@@ -138,39 +222,62 @@ export function initDatabase() {
       INSERT INTO users (id, name, role, password_hash, is_password_set)
       VALUES (?, ?, ?, ?, ?)
     `).run(uuidv4(), '老師', 'teacher', passwordHash, 1);
-    console.log('✅ 已創建默認老師帳戶 (密碼: admin)');
+    console.log('Created default teacher account (password: admin)');
   }
 
-  // 將現有學生移到預設教室（如果還沒有 classroom_id）
+  // 撠?飛?宏?圈?閮剜?摰歹?憒?????classroom_id嚗?
   db.prepare('UPDATE users SET classroom_id = ? WHERE role = ? AND classroom_id IS NULL')
     .run(defaultClassroomId, 'student');
 
-  // 將現有作業移到預設教室（如果還沒有 classroom_id）
+  // 撠??璆剔宏?圈?閮剜?摰歹?憒?????classroom_id嚗?
   db.prepare('UPDATE assignments SET classroom_id = ? WHERE classroom_id IS NULL')
     .run(defaultClassroomId);
 
-  console.log('✅ 數據庫初始化完成');
+  console.log('Database initialized');
 }
 
-// 教室操作
+export function formatClassroomTimer(classroom) {
+  if (!classroom || !classroom.timer_ends_at) return null;
+
+  const endsAt = Number(classroom.timer_ends_at);
+  const startedAt = classroom.timer_started_at ? Number(classroom.timer_started_at) : null;
+
+  return {
+    classroomId: classroom.id,
+    title: classroom.timer_title || '課堂倒數',
+    startedAt,
+    endsAt,
+    isActive: endsAt > Date.now()
+  };
+}
+
+function decorateClassroom(classroom) {
+  if (!classroom) return null;
+
+  return {
+    ...classroom,
+    studentCount: db.prepare('SELECT COUNT(*) as count FROM users WHERE classroom_id = ? AND role = ?').get(classroom.id, 'student').count,
+    assignmentCount: db.prepare('SELECT COUNT(*) as count FROM assignments WHERE classroom_id = ?').get(classroom.id).count,
+    timer: formatClassroomTimer(classroom)
+  };
+}
+
+// ?恕??
 export const classroomOperations = {
-  // 獲取所有教室
+  // ?脣????摰?
   getAll: () => {
     const classrooms = db.prepare('SELECT * FROM classrooms ORDER BY created_at DESC').all();
-    // 為每個教室添加學生數量和作業數量
-    return classrooms.map(c => ({
-      ...c,
-      studentCount: db.prepare('SELECT COUNT(*) as count FROM users WHERE classroom_id = ? AND role = ?').get(c.id, 'student').count,
-      assignmentCount: db.prepare('SELECT COUNT(*) as count FROM assignments WHERE classroom_id = ?').get(c.id).count
-    }));
+    // ?箸???摰斗溶?飛???雿平?賊?
+    return classrooms.map(decorateClassroom);
   },
 
-  // 根據 ID 獲取教室
+  // ?寞? ID ?脣??恕
   getById: (id) => {
-    return db.prepare('SELECT * FROM classrooms WHERE id = ?').get(id);
+    const classroom = db.prepare('SELECT * FROM classrooms WHERE id = ?').get(id);
+    return decorateClassroom(classroom);
   },
 
-  // 創建教室
+  // ?萄遣?恕
   create: (name, description) => {
     const id = uuidv4();
     db.prepare(`
@@ -180,23 +287,47 @@ export const classroomOperations = {
     return classroomOperations.getById(id);
   },
 
-  // 更新教室
+  // ?湔?恕
   update: (id, name, description) => {
     db.prepare('UPDATE classrooms SET name = ?, description = ? WHERE id = ?')
       .run(name, description || '', id);
     return classroomOperations.getById(id);
   },
 
-  // 刪除教室
+  setTimer: (id, title, durationMinutes) => {
+    const startedAt = Date.now();
+    const minutes = Math.max(1, Math.min(600, Math.ceil(Number(durationMinutes))));
+    const endsAt = startedAt + minutes * 60 * 1000;
+
+    db.prepare(`
+      UPDATE classrooms
+      SET timer_title = ?, timer_started_at = ?, timer_ends_at = ?
+      WHERE id = ?
+    `).run(String(title || '課堂倒數').trim(), startedAt, endsAt, id);
+
+    return classroomOperations.getById(id);
+  },
+
+  clearTimer: (id) => {
+    db.prepare(`
+      UPDATE classrooms
+      SET timer_title = NULL, timer_started_at = NULL, timer_ends_at = NULL
+      WHERE id = ?
+    `).run(id);
+
+    return classroomOperations.getById(id);
+  },
+
+  // ?芷?恕
   delete: (id) => {
-    // 先將該教室的學生和作業移到 null
+    // ??閰脫?摰斤?摮貊???璆剔宏??null
     db.prepare('UPDATE users SET classroom_id = NULL WHERE classroom_id = ?').run(id);
     db.prepare('UPDATE assignments SET classroom_id = NULL WHERE classroom_id = ?').run(id);
-    // 刪除教室
+    // ?芷?恕
     db.prepare('DELETE FROM classrooms WHERE id = ?').run(id);
   },
 
-  // 獲取教室的學生
+  // ?脣??恕?飛??
   getStudents: (classroomId) => {
     return db.prepare(`
       SELECT u.*, sc.current_code, sc.current_language
@@ -207,15 +338,15 @@ export const classroomOperations = {
     `).all(classroomId);
   },
 
-  // 獲取教室的作業
+  // ?脣??恕??璆?
   getAssignments: (classroomId) => {
     return db.prepare('SELECT * FROM assignments WHERE classroom_id = ? ORDER BY created_at DESC').all(classroomId);
   }
 };
 
-// 用戶相關操作
+// ?冽?賊???
 export const userOperations = {
-  // 獲取所有學生
+  // ?脣???飛??
   getAllStudents: () => {
     return db.prepare(`
       SELECT u.*, sc.current_code, sc.current_language
@@ -226,17 +357,24 @@ export const userOperations = {
     `).all();
   },
 
-  // 根據 ID 獲取用戶
+  getStudentCountByClassroom: (classroomId) => {
+    if (!classroomId) {
+      return db.prepare('SELECT COUNT(*) as count FROM users WHERE role = ?').get('student').count;
+    }
+    return db.prepare('SELECT COUNT(*) as count FROM users WHERE role = ? AND classroom_id = ?').get('student', classroomId).count;
+  },
+
+  // ?寞? ID ?脣??冽
   getById: (id) => {
     return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   },
 
-  // 根據名字獲取用戶
+  // ?寞????脣??冽
   getByName: (name, role) => {
     return db.prepare('SELECT * FROM users WHERE name = ? AND role = ?').get(name, role);
   },
 
-  // 創建學生
+  // ?萄遣摮貊?
   createStudent: (name, classroomId = null) => {
     const id = uuidv4();
     db.prepare(`
@@ -244,58 +382,64 @@ export const userOperations = {
       VALUES (?, ?, 'student', ?, 0)
     `).run(id, name, classroomId);
     
-    // 創建學生代碼記錄
+    // ?萄遣摮貊?隞?Ⅳ閮?
     db.prepare(`
       INSERT INTO student_code (student_id, current_code, current_language)
       VALUES (?, ?, 'python')
-    `).run(id, `# ${name} 的程式碼\n# 請在這裡開始編寫...\n\nprint("Hello, World!")`);
+    `).run(id, `# ${name} ??撘Ⅳ\n# 隢?ㄐ??蝺典神...\n\nprint("Hello, World!")`);
     
     return userOperations.getById(id);
   },
 
-  // 更新學生所屬教室
+  // ?湔摮貊??撅祆?摰?
   updateStudentClassroom: (studentId, classroomId) => {
     db.prepare('UPDATE users SET classroom_id = ? WHERE id = ?').run(classroomId, studentId);
   },
 
-  // 設置密碼
+  // 閮剔蔭撖Ⅳ
   setPassword: (id, password) => {
     const hash = bcrypt.hashSync(password, 10);
     db.prepare('UPDATE users SET password_hash = ?, is_password_set = 1 WHERE id = ?').run(hash, id);
   },
 
-  // 驗證密碼
+  // 撽?撖Ⅳ
   verifyPassword: (id, password) => {
     const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(id);
     if (!user || !user.password_hash) return false;
     return bcrypt.compareSync(password, user.password_hash);
   },
 
-  // 重置密碼（老師用）
+  // ?蔭撖Ⅳ嚗葦?剁?
   resetPassword: (id) => {
     db.prepare('UPDATE users SET password_hash = NULL, is_password_set = 0 WHERE id = ?').run(id);
   },
 
-  // 更新在線狀態
+  // ?湔?函????
   setOnlineStatus: (id, isOnline) => {
     db.prepare('UPDATE users SET is_online = ?, last_active = ? WHERE id = ?')
       .run(isOnline ? 1 : 0, Date.now(), id);
   },
 
-  // 刪除學生
+  setHelpRequest: (id, isRaised) => {
+    db.prepare('UPDATE users SET hand_raised = ?, hand_raised_at = ? WHERE id = ?')
+      .run(isRaised ? 1 : 0, isRaised ? Date.now() : null, id);
+    return userOperations.getById(id);
+  },
+
+  // ?芷摮貊?
   deleteStudent: (id) => {
     db.prepare('DELETE FROM users WHERE id = ? AND role = ?').run(id, 'student');
   },
 
-  // 獲取老師
+  // ?脣??葦
   getTeacher: () => {
     return db.prepare('SELECT * FROM users WHERE role = ?').get('teacher');
   }
 };
 
-// 學生代碼操作
+// 摮貊?隞?Ⅳ??
 export const codeOperations = {
-  // 更新代碼
+  // ?湔隞?Ⅳ
   updateCode: (studentId, code, language) => {
     db.prepare(`
       INSERT INTO student_code (student_id, current_code, current_language)
@@ -306,15 +450,15 @@ export const codeOperations = {
     `).run(studentId, code, language);
   },
 
-  // 獲取代碼
+  // ?脣?隞?Ⅳ
   getCode: (studentId) => {
     return db.prepare('SELECT * FROM student_code WHERE student_id = ?').get(studentId);
   }
 };
 
-// 反饋操作
+// ????
 export const feedbackOperations = {
-  // 創建反饋
+  // ?萄遣??
   create: (studentId, message, fromTeacher = true) => {
     const id = uuidv4();
     db.prepare(`
@@ -324,35 +468,39 @@ export const feedbackOperations = {
     return db.prepare('SELECT * FROM feedbacks WHERE id = ?').get(id);
   },
 
-  // 獲取學生的反饋
+  // ?脣?摮貊???擖?
   getByStudent: (studentId) => {
     return db.prepare('SELECT * FROM feedbacks WHERE student_id = ? ORDER BY created_at ASC').all(studentId);
   },
 
-  // 標記為已讀
+  // 璅??箏歇霈
   markAsRead: (studentId) => {
-    db.prepare('UPDATE feedbacks SET is_read = 1 WHERE student_id = ?').run(studentId);
+    db.prepare('UPDATE feedbacks SET is_read = 1 WHERE student_id = ? AND from_teacher = 1').run(studentId);
   },
 
-  // 清空學生的所有對話
+  // 皜征摮貊?????閰?
   clearByStudent: (studentId) => {
     db.prepare('DELETE FROM feedbacks WHERE student_id = ?').run(studentId);
   }
 };
 
-// 作業操作
+// 雿平??
 export const assignmentOperations = {
-  // 獲取所有作業
+  // ?脣????璆?
   getAll: () => {
     return db.prepare('SELECT * FROM assignments ORDER BY created_at DESC').all();
   },
 
-  // 根據教室獲取作業
+  // ?寞??恕?脣?雿平
   getByClassroom: (classroomId) => {
     return db.prepare('SELECT * FROM assignments WHERE classroom_id = ? ORDER BY created_at DESC').all(classroomId);
   },
 
-  // 創建作業
+  getById: (id) => {
+    return db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+  },
+
+  // ?萄遣雿平
   create: (title, description, dueDate, classroomId = null) => {
     const id = uuidv4();
     db.prepare(`
@@ -362,21 +510,38 @@ export const assignmentOperations = {
     return db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
   },
 
-  // 更新作業開放狀態
+  // ?湔雿平????
   toggleOpen: (id) => {
     db.prepare('UPDATE assignments SET is_open = NOT is_open WHERE id = ?').run(id);
   },
 
-  // 刪除作業
+  // ?芷雿平
   delete: (id) => {
     db.prepare('DELETE FROM assignments WHERE id = ?').run(id);
   }
 };
 
-// 提交操作
+// ?漱??
 export const submissionOperations = {
-  // 創建提交
-  create: (studentId, assignmentId, code, language) => {
+  // ?萄遣?漱
+  saveLatest: (studentId, assignmentId, code, language) => {
+    const existing = db.prepare(`
+      SELECT *
+      FROM submissions
+      WHERE student_id = ? AND assignment_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(studentId, assignmentId);
+
+    if (existing) {
+      db.prepare(`
+        UPDATE submissions
+        SET code = ?, language = ?, status = 'submitted', created_at = ?
+        WHERE id = ?
+      `).run(code, language, Date.now(), existing.id);
+      return db.prepare('SELECT * FROM submissions WHERE id = ?').get(existing.id);
+    }
+
     const id = uuidv4();
     db.prepare(`
       INSERT INTO submissions (id, student_id, assignment_id, code, language)
@@ -385,20 +550,193 @@ export const submissionOperations = {
     return db.prepare('SELECT * FROM submissions WHERE id = ?').get(id);
   },
 
-  // 獲取學生的提交
+  // ?脣?摮貊???鈭?
   getByStudent: (studentId) => {
-    return db.prepare('SELECT * FROM submissions WHERE student_id = ? ORDER BY created_at DESC').all(studentId);
+    return db.prepare(`
+      SELECT *
+      FROM submissions s
+      WHERE s.student_id = ?
+        AND s.created_at = (
+          SELECT MAX(s2.created_at)
+          FROM submissions s2
+          WHERE s2.assignment_id = s.assignment_id
+            AND s2.student_id = s.student_id
+        )
+      ORDER BY s.created_at DESC
+    `).all(studentId);
   },
 
-  // 獲取作業的所有提交
+  // ?脣?雿平????鈭?
   getByAssignment: (assignmentId) => {
     return db.prepare(`
       SELECT s.*, u.name as student_name
       FROM submissions s
       JOIN users u ON s.student_id = u.id
       WHERE s.assignment_id = ?
+        AND s.created_at = (
+          SELECT MAX(s2.created_at)
+          FROM submissions s2
+          WHERE s2.assignment_id = s.assignment_id
+            AND s2.student_id = s.student_id
+        )
       ORDER BY s.created_at DESC
     `).all(assignmentId);
   }
 };
 
+export const folderOperations = {
+  getByStudent: (studentId) => {
+    return db.prepare(`
+      SELECT *
+      FROM student_project_folders
+      WHERE student_id = ?
+      ORDER BY name ASC
+    `).all(studentId);
+  },
+
+  getById: (id, studentId) => {
+    return db.prepare(`
+      SELECT *
+      FROM student_project_folders
+      WHERE id = ? AND student_id = ?
+    `).get(id, studentId);
+  },
+
+  create: (studentId, name, parentId = null) => {
+    const id = uuidv4();
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO student_project_folders (id, student_id, name, parent_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, studentId, name, parentId || null, now, now);
+    return folderOperations.getById(id, studentId);
+  },
+
+  update: (id, studentId, { name, parentId }) => {
+    const current = folderOperations.getById(id, studentId);
+    if (!current) return null;
+
+    db.prepare(`
+      UPDATE student_project_folders
+      SET name = ?, parent_id = ?, updated_at = ?
+      WHERE id = ? AND student_id = ?
+    `).run(
+      name ?? current.name,
+      parentId === undefined ? current.parent_id : parentId,
+      Date.now(),
+      id,
+      studentId
+    );
+
+    return folderOperations.getById(id, studentId);
+  },
+
+  deleteEmpty: (id, studentId) => {
+    const childCount = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM student_project_folders
+      WHERE parent_id = ? AND student_id = ?
+    `).get(id, studentId).count;
+
+    const projectCount = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM student_projects
+      WHERE folder_id = ? AND student_id = ?
+    `).get(id, studentId).count;
+
+    if (childCount || projectCount) {
+      return { deleted: false, reason: 'not_empty' };
+    }
+
+    db.prepare('DELETE FROM student_project_folders WHERE id = ? AND student_id = ?').run(id, studentId);
+    return { deleted: true };
+  }
+};
+
+export const projectOperations = {
+  getByStudent: (studentId) => {
+    return db.prepare(`
+      SELECT *
+      FROM student_projects
+      WHERE student_id = ?
+      ORDER BY updated_at DESC
+    `).all(studentId);
+  },
+
+  getById: (id, studentId) => {
+    return db.prepare(`
+      SELECT *
+      FROM student_projects
+      WHERE id = ? AND student_id = ?
+    `).get(id, studentId);
+  },
+
+  create: (studentId, name, code, language, sourceAssignmentId = null, folderId = null) => {
+    const id = uuidv4();
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO student_projects (id, student_id, name, code, language, folder_id, source_assignment_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, studentId, name, code || '', language || 'python', folderId || null, sourceAssignmentId || null, now, now);
+    return db.prepare('SELECT * FROM student_projects WHERE id = ?').get(id);
+  },
+
+  update: (id, studentId, { name, code, language, folderId }) => {
+    const current = projectOperations.getById(id, studentId);
+    if (!current) return null;
+
+    db.prepare(`
+      UPDATE student_projects
+      SET name = ?, code = ?, language = ?, folder_id = ?, updated_at = ?
+      WHERE id = ? AND student_id = ?
+    `).run(
+      name ?? current.name,
+      code ?? current.code,
+      language ?? current.language,
+      folderId === undefined ? current.folder_id : folderId,
+      Date.now(),
+      id,
+      studentId
+    );
+
+    return projectOperations.getById(id, studentId);
+  },
+
+  delete: (id, studentId) => {
+    return db.prepare('DELETE FROM student_projects WHERE id = ? AND student_id = ?').run(id, studentId);
+  }
+};
+
+export const aiMessageOperations = {
+  getByProject: (studentId, projectId, limit = 40) => {
+    return db.prepare(`
+      SELECT *
+      FROM (
+        SELECT *
+        FROM student_ai_messages
+        WHERE student_id = ? AND project_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      )
+      ORDER BY created_at ASC
+    `).all(studentId, projectId, limit);
+  },
+
+  create: (studentId, projectId, role, content, metadata = {}) => {
+    const id = uuidv4();
+    db.prepare(`
+      INSERT INTO student_ai_messages (id, student_id, project_id, role, content, context_url, attachment_name, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      studentId,
+      projectId,
+      role,
+      content,
+      metadata.contextUrl || null,
+      metadata.attachmentName || null,
+      Date.now()
+    );
+    return db.prepare('SELECT * FROM student_ai_messages WHERE id = ?').get(id);
+  }
+};

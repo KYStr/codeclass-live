@@ -11,7 +11,12 @@ import {
   onStudentCodeUpdate,
   onStudentOnline,
   onStudentOffline,
+  onStudentHelpRequest,
+  onStudentHelpCleared,
+  onStudentHelpStatus,
+  onClassroomTimerUpdated,
   onNewFeedback,
+  onUnreadFeedback,
   onStudentsSync,
   onStudentCreated,
   onStudentDeleted,
@@ -36,12 +41,10 @@ const App: React.FC = () => {
   const [serverOnline, setServerOnline] = useState(false);
   const [loading, setLoading] = useState(true);
   
-  // 數據狀態
   const [students, setStudents] = useState<StudentData[]>([]);
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [currentStudent, setCurrentStudent] = useState<StudentData | null>(null);
 
-  // 檢查伺服器狀態
   useEffect(() => {
     const checkServer = async () => {
       try {
@@ -55,11 +58,11 @@ const App: React.FC = () => {
     };
 
     checkServer();
-    const interval = setInterval(checkServer, 30000); // 每 30 秒檢查一次
+    const interval = setInterval(checkServer, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  // 載入數據
+  // 載入初始資料
   const loadData = useCallback(async () => {
     if (!serverOnline || !user) return;
 
@@ -71,7 +74,7 @@ const App: React.FC = () => {
       setStudents(studentsData);
       setAssignments(assignmentsData);
 
-      // 如果是學生，設置當前學生
+      // 如果目前登入的是學生，更新自己的資料。
       if (user.role === 'student') {
         const student = studentsData.find(s => s.id === user.id);
         if (student) setCurrentStudent(student);
@@ -81,7 +84,6 @@ const App: React.FC = () => {
     }
   }, [serverOnline, user]);
 
-  // 用戶登入後連接 Socket 並載入數據
   useEffect(() => {
     if (!user || !serverOnline) return;
 
@@ -99,15 +101,14 @@ const App: React.FC = () => {
     };
   }, [user, serverOnline, loadData]);
 
-  // Socket 事件監聽（老師）
   useEffect(() => {
     if (!user || user.role !== 'teacher') return;
 
     const unsubscribers: (() => void)[] = [];
 
-    // 學生代碼更新
+    // 學生程式碼更新
     unsubscribers.push(onStudentCodeUpdate((data) => {
-      console.log('📥 收到學生代碼更新:', {
+      console.log('收到學生程式碼更新:', {
         studentId: data.studentId.slice(0, 8) + '...',
         codeLength: data.code.length,
         language: data.language
@@ -118,7 +119,6 @@ const App: React.FC = () => {
           : s
       ));
     }));
-
     // 學生上線
     unsubscribers.push(onStudentOnline((data) => {
       setStudents(prev => prev.map(s => 
@@ -133,7 +133,35 @@ const App: React.FC = () => {
       ));
     }));
 
-    // 學生創建
+    unsubscribers.push(onStudentsSync(() => {
+      loadData();
+    }));
+
+    unsubscribers.push(onStudentHelpRequest((data) => {
+      setStudents(prev => prev.map(s =>
+        s.id === data.studentId
+          ? { ...s, handRaised: true, handRaisedAt: data.handRaisedAt }
+          : s
+      ));
+    }));
+
+    unsubscribers.push(onStudentHelpCleared((data) => {
+      setStudents(prev => prev.map(s =>
+        s.id === data.studentId
+          ? { ...s, handRaised: false, handRaisedAt: null }
+          : s
+      ));
+    }));
+
+    unsubscribers.push(onClassroomTimerUpdated((data) => {
+      setStudents(prev => prev.map(s =>
+        s.classroomId === data.classroomId
+          ? { ...s, classroomTimer: data.timer }
+          : s
+      ));
+    }));
+
+    // 學生建立
     unsubscribers.push(onStudentCreated(() => {
       loadData();
     }));
@@ -143,18 +171,15 @@ const App: React.FC = () => {
       setStudents(prev => prev.filter(s => s.id !== data.studentId));
     }));
 
-    // 新提交
     unsubscribers.push(onNewSubmission((data) => {
       setStudents(prev => prev.map(s => 
         s.id === data.studentId 
           ? { ...s, submissions: [...s.submissions, data.submission] }
           : s
       ));
-      // 更新作業提交數
       loadData();
     }));
 
-    // 反饋更新（老師發送的）
     unsubscribers.push(onFeedbackUpdated((data) => {
       setStudents(prev => prev.map(s => 
         s.id === data.studentId 
@@ -163,7 +188,7 @@ const App: React.FC = () => {
       ));
     }));
 
-    // 學生消息
+    // 學生回覆老師
     unsubscribers.push(onStudentMessageNew((data) => {
       setStudents(prev => prev.map(s => 
         s.id === data.studentId 
@@ -172,9 +197,9 @@ const App: React.FC = () => {
       ));
     }));
 
-    // 對話清空（老師端監聽）
+    // 對話清空
     unsubscribers.push(onFeedbackCleared((data) => {
-      // 更新 students 數組
+      // 更新學生列表中的對話狀態
       setStudents(prev => prev.map(s => 
         s.id === data.studentId 
           ? { ...s, feedbacks: [] }
@@ -182,7 +207,7 @@ const App: React.FC = () => {
       ));
     }));
 
-    // 作業相關
+    // 作業相關事件
     unsubscribers.push(onAssignmentCreated(() => loadData()));
     unsubscribers.push(onAssignmentToggled(() => loadData()));
     unsubscribers.push(onAssignmentDeleted(() => loadData()));
@@ -192,13 +217,12 @@ const App: React.FC = () => {
     };
   }, [user, loadData]);
 
-  // Socket 事件監聽（學生）
+  // Socket 事件監聽：學生端
   useEffect(() => {
     if (!user || user.role !== 'student') return;
 
     const unsubscribers: (() => void)[] = [];
 
-    // 新反饋
     unsubscribers.push(onNewFeedback((feedback) => {
       setCurrentStudent(prev => prev ? {
         ...prev,
@@ -206,7 +230,6 @@ const App: React.FC = () => {
       } : null);
     }));
 
-    // 對話清空（學生端監聽）
     unsubscribers.push(onFeedbackCleared((data) => {
       setCurrentStudent(prev => 
         prev && prev.id === data.studentId 
@@ -215,7 +238,34 @@ const App: React.FC = () => {
       );
     }));
 
-    // 作業相關
+    unsubscribers.push(onStudentHelpStatus((data) => {
+      setCurrentStudent(prev =>
+        prev && prev.id === data.studentId
+          ? { ...prev, handRaised: data.handRaised, handRaisedAt: data.handRaisedAt }
+          : prev
+      );
+    }));
+
+    unsubscribers.push(onClassroomTimerUpdated((data) => {
+      setCurrentStudent(prev =>
+        prev && prev.classroomId === data.classroomId
+          ? { ...prev, classroomTimer: data.timer }
+          : prev
+      );
+    }));
+
+    // 作業相關事件
+    unsubscribers.push(onUnreadFeedback((feedbacks) => {
+      setCurrentStudent(prev => {
+        if (!prev) return null;
+        const existingIds = new Set(prev.feedbacks.map(feedback => feedback.id));
+        const newFeedbacks = feedbacks.filter(feedback => !existingIds.has(feedback.id));
+        return newFeedbacks.length > 0
+          ? { ...prev, feedbacks: [...prev.feedbacks, ...newFeedbacks] }
+          : prev;
+      });
+    }));
+
     unsubscribers.push(onAssignmentCreated(() => loadData()));
     unsubscribers.push(onAssignmentToggled(() => loadData()));
     unsubscribers.push(onAssignmentDeleted(() => loadData()));
@@ -241,22 +291,21 @@ const App: React.FC = () => {
     setCurrentStudent(null);
   };
 
-  // 更新學生數據（老師用）
+  // 更新學生資料
   const handleUpdateStudents = (updatedStudents: StudentData[]) => {
     setStudents(updatedStudents);
   };
 
-  // 更新作業數據
+  // 更新作業資料
   const handleUpdateAssignments = (updatedAssignments: AssignmentData[]) => {
     setAssignments(updatedAssignments);
   };
 
-  // 更新當前學生數據
+  // 更新目前學生資料
   const handleUpdateCurrentStudent = (updatedStudent: StudentData) => {
     setCurrentStudent(updatedStudent);
   };
 
-  // 載入中
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
@@ -268,7 +317,6 @@ const App: React.FC = () => {
     );
   }
 
-  // 未登入
   if (!user) {
     return (
       <LoginPage
@@ -279,7 +327,7 @@ const App: React.FC = () => {
     );
   }
 
-  // 老師視圖
+  // 老師畫面
   if (user.role === 'teacher') {
     return (
       <div className="relative">
@@ -300,13 +348,13 @@ const App: React.FC = () => {
     );
   }
 
-  // 學生視圖
+  // 學生畫面
   if (user.role === 'student' && currentStudent) {
     return (
       <div className="relative">
         <button 
           onClick={handleLogout} 
-          className="absolute top-3 right-64 z-50 bg-gray-800 text-xs px-4 py-2 rounded-lg border border-gray-600 hover:bg-red-900/50 hover:border-red-500 text-gray-400 hover:text-red-200 transition-all duration-200"
+          className="hidden"
         >
           登出
         </button>
@@ -314,6 +362,7 @@ const App: React.FC = () => {
           student={currentStudent}
           assignments={assignments}
           onUpdateStudent={handleUpdateCurrentStudent}
+          onLogout={handleLogout}
         />
       </div>
     );

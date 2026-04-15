@@ -1,235 +1,222 @@
-# CodeClass Live 🎓
+# CodeClass Live
 
-> 即時程式教學輔助平台 - 讓線上程式教學更高效
+即時程式教學輔助平台，讓老師在課堂中監看學生練習、發布作業、給予回饋，並讓學生保存自己的練習專案與取得 AI 提示。
 
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
-![Node.js](https://img.shields.io/badge/Node.js-20-339933?logo=node.js)
-![Socket.IO](https://img.shields.io/badge/Socket.IO-4-010101?logo=socket.io)
-![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite)
+## 主要功能
 
----
+### 老師端
 
-## ✨ 功能特色
+- 教室管理：先選擇要進入的教室，老師端左上也可隨時切換。
+- 即時監看：查看同一教室內學生目前的程式碼、語言、在線狀態與提交狀況。
+- 舉手提醒：學生按下舉手後，老師端對應學生卡片會亮起，老師處理後可清除狀態。
+- 教室倒數：老師可替目前教室設定倒數計時，學生端會即時同步顯示。
+- 作業管理：發布、開關、刪除作業，查看學生提交狀況。
+- 重複提交：截止時間內學生可更新提交，老師預設看到最新版本。
+- 師生對話：老師可以針對單一學生傳訊息，也可清除對話。
+- 程式執行與 AI 分析：老師可執行學生程式碼，或對學生程式碼做輔助分析。
 
-### 👨‍🏫 老師端
-- 📺 **即時監控** - 實時查看所有學生的程式碼
-- 💬 **即時反饋** - 發送留言給學生
-- 📝 **作業管理** - 發布、查看提交狀況
-- 👥 **學生管理** - 新增、刪除、重置密碼
-- 🤖 **AI 分析** - Gemini 智能分析學生代碼
-- ▶️ **代碼執行** - 直接運行學生代碼
+### 學生端
 
-### 👨‍🎓 學生端
-- 💻 **代碼編輯器** - 語法高亮、行號顯示
-- 🌐 **多語言支援** - Python、JavaScript、Java、C++
-- 📬 **接收反饋** - 懸浮視窗即時通知
-- 📤 **作業提交** - 一鍵繳交作業
-- 💡 **AI 提示** - 獲取智能提示
-- ▶️ **執行代碼** - 立即查看結果
+- 程式編輯器：支援 Python、JavaScript、Java、C++，含語法高亮與基本補全。
+- 練習專案：學生可建立自己的練習專案與資料夾，支援收合、拖曳移動與儲存。
+- 作業工作流：作業可收合整理，可將課堂作業一鍵存成練習專案。
+- 程式輸入與執行：可提供 stdin 測試 `input()` 類程式。
+- 舉手發問：一鍵通知老師目前需要協助。
+- AI 提示：每個練習專案保留獨立 AI 對話，只提供提示與類似範例，不直接給完整答案。
+- Markdown 顯示：AI 回覆支援 Markdown 與表格。
+- 介面主題：可選 VS Code Dark、VS Code Light、Monokai、Solarized Light、Dracula。
+- 響應式介面：支援全螢幕、分割螢幕與窄寬比例。
 
-### 🔒 安全機制
-- 🔐 **密碼保護** - 老師/學生皆需密碼登入
-- 🔑 **老師預設密碼** - `admin`（請部署後立即修改）
-- 👤 **學生首次登入** - 自行設置密碼
+## 技術架構
 
----
+- 前端：React 19、Vite、TypeScript、Tailwind CSS、Monaco Editor
+- 後端：Node.js、Express、Socket.IO
+- 資料庫：SQLite / better-sqlite3
+- AI：Kimi Coding Plan API，使用 OpenAI-compatible 端點
+- 即時同步：Socket.IO
 
-## 🚀 快速開始
+## 快速開始
 
 ### 系統需求
-- Node.js 18+
-- Python 3 (用於代碼執行)
-- npm 或 yarn
 
-### 安裝步驟
+- Node.js 20 以上
+- npm
+- Python 3，用於後端程式執行器
+
+### 安裝
 
 ```bash
-# 1. 克隆專案
-git clone <repository-url>
+git clone https://github.com/KYStr/codeclass-live.git
 cd codeclass-live
 
-# 2. 安裝前端依賴
 npm install
-
-# 3. 安裝後端依賴
 cd server
 npm install
 cd ..
-
-# 4. 設置環境變數
-# 前端 (.env.local)
-echo "GEMINI_API_KEY=your_gemini_api_key" > .env.local
-
-# 後端 (server/.env)
-echo "PORT=3001" > server/.env
-echo "FRONTEND_URL=http://localhost:3000" >> server/.env
 ```
 
-### 啟動開發服務器
+### 設定環境變數
+
+前端可建立 `.env.local`：
+
+```env
+VITE_API_URL=http://localhost:3001/api
+VITE_SOCKET_URL=http://localhost:3001
+```
+
+後端請複製範例檔：
 
 ```bash
-# 終端 1: 啟動後端
+cp server/.env.example server/.env
+```
+
+`server/.env` 主要設定：
+
+```env
+PORT=3001
+FRONTEND_URL=http://localhost:3000
+KIMI_API_KEY=your_kimi_code_api_key_here
+KIMI_MODEL=kimi-for-coding
+KIMI_API_STYLE=openai
+KIMI_OPENAI_BASE_URL=https://api.kimi.com/coding/v1
+```
+
+注意：`.env`、`.env.local`、`server/.env`、SQLite 資料庫檔都已加入 `.gitignore`，不要把真實 API key 放進 Git。
+
+### 啟動開發環境
+
+終端 1：
+
+```bash
 cd server
 npm run dev
+```
 
-# 終端 2: 啟動前端
+終端 2：
+
+```bash
+npm run dev -- --host localhost
+```
+
+預設網址：
+
+- 前端：http://localhost:3000
+- 後端健康檢查：http://localhost:3001/api/health
+
+預設老師帳號：
+
+- 密碼：`admin`
+
+部署後請立即到老師端修改密碼。
+
+## 常用指令
+
+```bash
+# 前端建置
+npm run build
+
+# 啟動前端開發伺服器
+npm run dev
+
+# 啟動後端
+cd server
 npm run dev
 ```
 
-### 訪問應用
-- 前端：http://localhost:3000
-- 後端 API：http://localhost:3001/api
+## 專案結構
 
----
-
-## 🏗️ 系統架構
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     CodeClass Live                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐    Socket.IO    ┌──────────────┐          │
-│  │   前端 App   │ ◄─────────────► │   後端 API   │          │
-│  │  React 19    │    WebSocket    │  Express     │          │
-│  │  Vite 6      │                 │  Node.js     │          │
-│  └──────────────┘                 └──────────────┘          │
-│         │                                │                   │
-│         │ REST API                       │                   │
-│         └────────────────────────────────┤                   │
-│                                          │                   │
-│                              ┌───────────▼───────────┐      │
-│                              │      SQLite DB        │      │
-│                              │  • 用戶 • 代碼 • 作業  │      │
-│                              └───────────────────────┘      │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📂 專案結構
-
-```
+```text
 codeclass-live/
-├── components/           # React 組件
-│   ├── CodeEditor.tsx    # 代碼編輯器
-│   ├── LoginPage.tsx     # 登入頁面
+├── App.tsx
+├── components/
+│   ├── ClassroomManager.tsx
+│   ├── CodeEditor.tsx
+│   ├── LoginPage.tsx
 │   ├── StudentDashboard.tsx
 │   └── TeacherDashboard.tsx
-├── services/             # 服務層
-│   ├── api.ts            # REST API
-│   ├── socket.ts         # WebSocket
-│   └── geminiService.ts  # AI 服務
-├── server/               # 後端
-│   ├── index.js          # 入口
-│   ├── database.js       # 資料庫
-│   ├── routes/           # API 路由
-│   └── socket/           # Socket 處理
-├── App.tsx               # 主應用
-├── types.ts              # 類型定義
-└── vite.config.ts        # Vite 配置
+├── docs/
+│   └── future-development-plan.md
+├── services/
+│   ├── api.ts
+│   ├── geminiService.ts
+│   └── socket.ts
+├── server/
+│   ├── database.js
+│   ├── index.js
+│   ├── routes/
+│   ├── services/
+│   │   └── kimiTutor.js
+│   └── socket/
+└── vite.config.ts
 ```
 
----
+## API 摘要
 
-## 🔧 API 參考
+### 教室
 
-### 認證
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/api/auth/teacher/login` | POST | 老師登入 |
-| `/api/auth/student/login` | POST | 學生登入 |
-| `/api/auth/student/set-password` | POST | 設置密碼 |
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| GET | `/api/classrooms` | 取得教室列表 |
+| POST | `/api/classrooms` | 建立教室 |
+| PUT | `/api/classrooms/:id` | 更新教室 |
+| DELETE | `/api/classrooms/:id` | 刪除教室 |
+| POST | `/api/classrooms/:id/timer` | 設定教室倒數 |
+| POST | `/api/classrooms/:id/timer/clear` | 清除教室倒數 |
 
 ### 學生
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/api/students` | GET | 獲取所有學生 |
-| `/api/students` | POST | 創建學生 |
-| `/api/students/:id` | DELETE | 刪除學生 |
-| `/api/students/:id/feedback` | POST | 發送反饋 |
-| `/api/students/:id/submit` | POST | 提交作業 |
 
-### 作業
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/api/assignments` | GET | 獲取所有作業 |
-| `/api/assignments` | POST | 創建作業 |
-| `/api/assignments/:id/toggle` | POST | 開關作業 |
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| GET | `/api/students` | 取得學生列表 |
+| POST | `/api/students` | 建立學生 |
+| PUT | `/api/students/:id/classroom` | 移動學生到教室 |
+| POST | `/api/students/:id/help-request` | 學生舉手 |
+| POST | `/api/students/:id/help-request/clear` | 清除舉手狀態 |
+| POST | `/api/students/:id/submit` | 提交或更新作業 |
 
----
+### 練習專案與 AI
 
-## 🌍 部署
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| GET | `/api/students/:id/projects` | 取得學生練習專案 |
+| POST | `/api/students/:id/projects` | 建立練習專案 |
+| PUT | `/api/students/:id/projects/:projectId` | 更新練習專案 |
+| DELETE | `/api/students/:id/projects/:projectId` | 刪除練習專案 |
+| GET | `/api/students/:id/project-folders` | 取得專案資料夾 |
+| POST | `/api/students/:id/project-folders` | 建立專案資料夾 |
+| GET | `/api/students/:id/projects/:projectId/ai/messages` | 取得專案 AI 對話 |
+| POST | `/api/students/:id/projects/:projectId/ai/messages` | 發送 AI 提示問題 |
 
-詳細部署指南請參閱 [DEPLOYMENT.md](./DEPLOYMENT.md)
+## AI 提示規則
 
-### 快速部署（腾讯云 CVM）
+AI 會收到：
 
-```bash
-# 在服务器上
-git clone <repo> /var/www/codeclass-live
-cd /var/www/codeclass-live
+- 學生目前使用的程式語言
+- 學生目前畫面的程式碼
+- 題目內容、題目網址或截圖
+- 同一練習專案的近期對話
 
-# 安装依赖
-npm install
-cd server && npm install && cd ..
+回覆原則：
 
-# 构建前端
-npm run build
+- 使用學生提問的語言回答
+- 給提示、方向、類似範例，不直接給完整答案
+- 範例程式需保留學生必須修改的部分
+- 新專案會建立新的 AI 對話脈絡
 
-# 使用 PM2 启动后端
-pm2 start server/index.js --name codeclass-backend
+## 維運提醒
 
-# 配置 Nginx 反向代理...
-```
+- `server/codeclass.db` 是本機 SQLite 資料庫，請定期備份。
+- `server/.env` 包含 API key，不要 commit。
+- 目前程式執行器適合教學內網或受控環境；正式公開部署前建議改成 Docker 沙箱。
+- 未來功能規劃在 [docs/future-development-plan.md](./docs/future-development-plan.md)。
 
----
+## 部署
 
-## 📖 使用指南
+詳細部署說明請參考：
 
-### 老師操作流程
-1. 使用密碼 `admin` 登入
-2. 前往「學生管理」新增學生
-3. 前往「作業管理」發布作業
-4. 在「即時監控」查看學生代碼
-5. 選擇學生發送反饋或 AI 分析
+- [DEPLOYMENT.md](./DEPLOYMENT.md)
+- [QUICK_DEPLOY.md](./QUICK_DEPLOY.md)
 
-### 學生操作流程
-1. 選擇自己的名字
-2. 首次登入設置密碼
-3. 查看作業說明
-4. 編寫代碼並執行測試
-5. 繳交作業
-
----
-
-## 🔮 未來規劃
-
-- [ ] 多班級支援
-- [ ] 成績評分系統
-- [ ] 代碼執行 Docker 沙箱
-- [ ] 學生互評功能
-- [ ] 歷史代碼版本
-- [ ] 導出成績報告
-
----
-
-## 📄 授權
+## 授權
 
 MIT License
-
----
-
-## 🙏 致謝
-
-- [React](https://react.dev/)
-- [Vite](https://vitejs.dev/)
-- [Socket.IO](https://socket.io/)
-- [Tailwind CSS](https://tailwindcss.com/)
-- [Lucide Icons](https://lucide.dev/)
-- [Google Gemini](https://ai.google.dev/)
-
----
-
-*Made with ❤️ for educators and students*
