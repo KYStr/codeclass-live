@@ -1,5 +1,5 @@
 import express from 'express';
-import { classroomOperations, userOperations, assignmentOperations, feedbackOperations, submissionOperations, formatClassroomTimer } from '../database.js';
+import { classroomOperations, userOperations, assignmentOperations, feedbackOperations, submissionOperations, formatClassroomTimer, classroomNoteFolderOperations, classroomNoteOperations, classroomNoteSyncOperations } from '../database.js';
 
 const router = express.Router();
 
@@ -12,6 +12,37 @@ function emitClassroomTimerUpdate(req, classroom) {
   req.io.to('teacher').emit('classroom:timer-updated', payload);
   classroomOperations.getStudents(classroom.id).forEach(student => {
     req.io.to(`student:${student.id}`).emit('classroom:timer-updated', payload);
+  });
+}
+
+const formatNoteFolder = (folder) => ({
+  id: folder.id,
+  classroomId: folder.classroom_id,
+  name: folder.name,
+  parentId: folder.parent_id,
+  createdAt: folder.created_at,
+  updatedAt: folder.updated_at
+});
+
+const formatNote = (note) => ({
+  id: note.id,
+  classroomId: note.classroom_id,
+  folderId: note.folder_id,
+  title: note.title,
+  content: note.content,
+  createdAt: note.created_at,
+  updatedAt: note.updated_at,
+  readOnly: true,
+  language: 'markdown'
+});
+
+function emitClassroomNotesUpdate(req, classroomId) {
+  classroomNoteSyncOperations.syncClassroomToStudentProjects(classroomId);
+  const payload = { classroomId };
+  req.io.to('teacher').emit('classroom:notes-updated', payload);
+  req.io.to(`classroom:${classroomId}`).emit('classroom:notes-updated', payload);
+  classroomOperations.getStudents(classroomId).forEach(student => {
+    req.io.to(`student:${student.id}`).emit('classroom:notes-updated', payload);
   });
 }
 
@@ -123,6 +154,181 @@ router.post('/:id/timer/clear', (req, res) => {
 });
 
 // 刪除教室
+router.get('/:id/note-folders', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    res.json({
+      success: true,
+      folders: classroomNoteFolderOperations.getByClassroom(req.params.id).map(formatNoteFolder)
+    });
+  } catch (error) {
+    console.error('Load classroom note folders failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.post('/:id/note-folders', (req, res) => {
+  try {
+    const { name, parentId } = req.body;
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: 'Request failed' });
+    }
+
+    if (parentId && !classroomNoteFolderOperations.getById(parentId, req.params.id)) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    const folder = classroomNoteFolderOperations.create(req.params.id, name.trim(), parentId || null);
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true, folder: formatNoteFolder(folder) });
+  } catch (error) {
+    console.error('Create classroom note folder failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.put('/:id/note-folders/:folderId', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    if (req.body.parentId && !classroomNoteFolderOperations.getById(req.body.parentId, req.params.id)) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    const folder = classroomNoteFolderOperations.update(req.params.folderId, req.params.id, req.body);
+    if (!folder) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true, folder: formatNoteFolder(folder) });
+  } catch (error) {
+    console.error('Update classroom note folder failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.delete('/:id/note-folders/:folderId', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    const result = classroomNoteFolderOperations.deleteTree(req.params.folderId, req.params.id);
+    if (!result.deleted) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete classroom note folder failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.get('/:id/notes', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    res.json({
+      success: true,
+      notes: classroomNoteOperations.getByClassroom(req.params.id).map(formatNote)
+    });
+  } catch (error) {
+    console.error('Load classroom notes failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.post('/:id/notes', (req, res) => {
+  try {
+    const { title, content, folderId } = req.body;
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, error: 'Request failed' });
+    }
+
+    if (folderId && !classroomNoteFolderOperations.getById(folderId, req.params.id)) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    const normalizedTitle = title.trim().endsWith('.md') ? title.trim() : `${title.trim()}.md`;
+    const note = classroomNoteOperations.create(req.params.id, normalizedTitle, content || '', folderId || null);
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true, note: formatNote(note) });
+  } catch (error) {
+    console.error('Create classroom note failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.put('/:id/notes/:noteId', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    if (req.body.folderId && !classroomNoteFolderOperations.getById(req.body.folderId, req.params.id)) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    const data = {
+      ...req.body,
+      title: typeof req.body.title === 'string' && req.body.title.trim()
+        ? (req.body.title.trim().endsWith('.md') ? req.body.title.trim() : `${req.body.title.trim()}.md`)
+        : undefined
+    };
+    const note = classroomNoteOperations.update(req.params.noteId, req.params.id, data);
+    if (!note) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true, note: formatNote(note) });
+  } catch (error) {
+    console.error('Update classroom note failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
+router.delete('/:id/notes/:noteId', (req, res) => {
+  try {
+    const classroom = classroomOperations.getById(req.params.id);
+    if (!classroom) {
+      return res.status(404).json({ success: false, error: 'Request failed' });
+    }
+
+    classroomNoteOperations.delete(req.params.noteId, req.params.id);
+    emitClassroomNotesUpdate(req, req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete classroom note failed:', error);
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+});
+
 router.delete('/:id', (req, res) => {
   try {
     classroomOperations.delete(req.params.id);

@@ -41,6 +41,33 @@ export function initDatabase() {
     // Column already exists.
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS classroom_note_folders (
+      id TEXT PRIMARY KEY,
+      classroom_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (classroom_id) REFERENCES classrooms(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES classroom_note_folders(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS classroom_notes (
+      id TEXT PRIMARY KEY,
+      classroom_id TEXT NOT NULL,
+      folder_id TEXT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (classroom_id) REFERENCES classrooms(id) ON DELETE CASCADE,
+      FOREIGN KEY (folder_id) REFERENCES classroom_note_folders(id) ON DELETE SET NULL
+    )
+  `);
+
   // ?冽銵剁??葦?飛??
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -141,6 +168,8 @@ export function initDatabase() {
       student_id TEXT NOT NULL,
       name TEXT NOT NULL,
       parent_id TEXT,
+      is_teacher_managed INTEGER DEFAULT 0,
+      source_note_folder_id TEXT,
       created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
       updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
       FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -157,6 +186,8 @@ export function initDatabase() {
       language TEXT NOT NULL DEFAULT 'python',
       folder_id TEXT,
       source_assignment_id TEXT,
+      is_read_only INTEGER DEFAULT 0,
+      source_note_id TEXT,
       created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
       updated_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
       FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -182,6 +213,30 @@ export function initDatabase() {
 
   try {
     db.exec('ALTER TABLE student_projects ADD COLUMN folder_id TEXT');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE student_project_folders ADD COLUMN is_teacher_managed INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE student_project_folders ADD COLUMN source_note_folder_id TEXT');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE student_projects ADD COLUMN is_read_only INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists.
+  }
+
+  try {
+    db.exec('ALTER TABLE student_projects ADD COLUMN source_note_id TEXT');
   } catch (e) {
     // Column already exists.
   }
@@ -233,6 +288,8 @@ export function initDatabase() {
   db.prepare('UPDATE assignments SET classroom_id = ? WHERE classroom_id IS NULL')
     .run(defaultClassroomId);
 
+  repairMojibakeStudentCode();
+
   console.log('Database initialized');
 }
 
@@ -249,6 +306,22 @@ export function formatClassroomTimer(classroom) {
     endsAt,
     isActive: endsAt > Date.now()
   };
+}
+
+export const createDefaultStudentCode = (name) =>
+  `# ${name} 的程式碼\n# 請在這裡開始寫你的程式...\n\nprint("Hello, World!")`;
+
+export function repairMojibakeStudentCode() {
+  const rows = db.prepare(`
+    SELECT sc.student_id, sc.current_code, u.name
+    FROM student_code sc
+    JOIN users u ON u.id = sc.student_id
+    WHERE sc.current_code LIKE '%??撘%'
+       OR sc.current_code LIKE '%隢%'
+  `).all();
+
+  const update = db.prepare('UPDATE student_code SET current_code = ? WHERE student_id = ?');
+  rows.forEach(row => update.run(createDefaultStudentCode(row.name), row.student_id));
 }
 
 function decorateClassroom(classroom) {
@@ -386,7 +459,7 @@ export const userOperations = {
     db.prepare(`
       INSERT INTO student_code (student_id, current_code, current_language)
       VALUES (?, ?, 'python')
-    `).run(id, `# ${name} ??撘Ⅳ\n# 隢?ㄐ??蝺典神...\n\nprint("Hello, World!")`);
+    `).run(id, createDefaultStudentCode(name));
     
     return userOperations.getById(id);
   },
@@ -650,6 +723,342 @@ export const folderOperations = {
 
     db.prepare('DELETE FROM student_project_folders WHERE id = ? AND student_id = ?').run(id, studentId);
     return { deleted: true };
+  }
+};
+
+export const classroomNoteFolderOperations = {
+  getByClassroom: (classroomId) => {
+    return db.prepare(`
+      SELECT *
+      FROM classroom_note_folders
+      WHERE classroom_id = ?
+      ORDER BY name ASC
+    `).all(classroomId);
+  },
+
+  getById: (id, classroomId) => {
+    return db.prepare(`
+      SELECT *
+      FROM classroom_note_folders
+      WHERE id = ? AND classroom_id = ?
+    `).get(id, classroomId);
+  },
+
+  create: (classroomId, name, parentId = null) => {
+    const id = uuidv4();
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO classroom_note_folders (id, classroom_id, name, parent_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, classroomId, name, parentId || null, now, now);
+    return classroomNoteFolderOperations.getById(id, classroomId);
+  },
+
+  update: (id, classroomId, { name, parentId }) => {
+    const current = classroomNoteFolderOperations.getById(id, classroomId);
+    if (!current) return null;
+
+    db.prepare(`
+      UPDATE classroom_note_folders
+      SET name = ?, parent_id = ?, updated_at = ?
+      WHERE id = ? AND classroom_id = ?
+    `).run(
+      name ?? current.name,
+      parentId === undefined ? current.parent_id : parentId,
+      Date.now(),
+      id,
+      classroomId
+    );
+
+    return classroomNoteFolderOperations.getById(id, classroomId);
+  },
+
+  deleteEmpty: (id, classroomId) => {
+    const childCount = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM classroom_note_folders
+      WHERE parent_id = ? AND classroom_id = ?
+    `).get(id, classroomId).count;
+
+    const noteCount = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM classroom_notes
+      WHERE folder_id = ? AND classroom_id = ?
+    `).get(id, classroomId).count;
+
+    if (childCount || noteCount) {
+      return { deleted: false, reason: 'not_empty' };
+    }
+
+    db.prepare('DELETE FROM classroom_note_folders WHERE id = ? AND classroom_id = ?').run(id, classroomId);
+    return { deleted: true };
+  },
+
+  deleteTree: (id, classroomId) => {
+    const root = classroomNoteFolderOperations.getById(id, classroomId);
+    if (!root) return { deleted: false, reason: 'not_found' };
+
+    const folders = db.prepare(`
+      SELECT *
+      FROM classroom_note_folders
+      WHERE classroom_id = ?
+    `).all(classroomId);
+    const descendants = new Set([id]);
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      folders.forEach(folder => {
+        if (folder.parent_id && descendants.has(folder.parent_id) && !descendants.has(folder.id)) {
+          descendants.add(folder.id);
+          changed = true;
+        }
+      });
+    }
+
+    const ids = [...descendants];
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`DELETE FROM classroom_notes WHERE classroom_id = ? AND folder_id IN (${placeholders})`)
+      .run(classroomId, ...ids);
+    db.prepare(`DELETE FROM classroom_note_folders WHERE classroom_id = ? AND id IN (${placeholders})`)
+      .run(classroomId, ...ids);
+
+    return { deleted: true };
+  }
+};
+
+export const classroomNoteOperations = {
+  getByClassroom: (classroomId) => {
+    return db.prepare(`
+      SELECT *
+      FROM classroom_notes
+      WHERE classroom_id = ?
+      ORDER BY updated_at DESC
+    `).all(classroomId);
+  },
+
+  getById: (id, classroomId) => {
+    return db.prepare(`
+      SELECT *
+      FROM classroom_notes
+      WHERE id = ? AND classroom_id = ?
+    `).get(id, classroomId);
+  },
+
+  create: (classroomId, title, content = '', folderId = null) => {
+    const id = uuidv4();
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO classroom_notes (id, classroom_id, folder_id, title, content, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, classroomId, folderId || null, title, content || '', now, now);
+    return classroomNoteOperations.getById(id, classroomId);
+  },
+
+  update: (id, classroomId, { title, content, folderId }) => {
+    const current = classroomNoteOperations.getById(id, classroomId);
+    if (!current) return null;
+
+    db.prepare(`
+      UPDATE classroom_notes
+      SET title = ?, content = ?, folder_id = ?, updated_at = ?
+      WHERE id = ? AND classroom_id = ?
+    `).run(
+      title ?? current.title,
+      content ?? current.content,
+      folderId === undefined ? current.folder_id : folderId,
+      Date.now(),
+      id,
+      classroomId
+    );
+
+    return classroomNoteOperations.getById(id, classroomId);
+  },
+
+  delete: (id, classroomId) => {
+    return db.prepare('DELETE FROM classroom_notes WHERE id = ? AND classroom_id = ?').run(id, classroomId);
+  }
+};
+
+export const classroomNoteSyncOperations = {
+  syncClassroomToStudentProjects: (classroomId) => {
+    const students = db.prepare(`
+      SELECT id
+      FROM users
+      WHERE role = 'student' AND classroom_id = ?
+    `).all(classroomId);
+    const noteFolders = db.prepare(`
+      SELECT *
+      FROM classroom_note_folders
+      WHERE classroom_id = ?
+      ORDER BY created_at ASC
+    `).all(classroomId);
+    const notes = db.prepare(`
+      SELECT *
+      FROM classroom_notes
+      WHERE classroom_id = ?
+      ORDER BY created_at ASC
+    `).all(classroomId);
+
+    const syncOneStudent = db.transaction((studentId) => {
+      const now = Date.now();
+      const folderIds = new Set(noteFolders.map(folder => folder.id));
+      const noteIds = new Set(notes.map(note => note.id));
+      const folderMap = new Map();
+      const getOrCreateStudentFolder = () => {
+        const existing = db.prepare(`
+          SELECT *
+          FROM student_project_folders
+          WHERE student_id = ? AND parent_id IS NULL AND name = ? AND IFNULL(is_teacher_managed, 0) = 0
+          LIMIT 1
+        `).get(studentId, '學生資料夾');
+
+        if (existing) return existing.id;
+
+        const id = uuidv4();
+        db.prepare(`
+          INSERT INTO student_project_folders
+            (id, student_id, name, parent_id, is_teacher_managed, source_note_folder_id, created_at, updated_at)
+          VALUES (?, ?, ?, NULL, 0, NULL, ?, ?)
+        `).run(id, studentId, '學生資料夾', now, now);
+        return id;
+      };
+      let pending = [...noteFolders];
+
+      while (pending.length > 0) {
+        const nextPending = [];
+        let progressed = false;
+
+        for (const folder of pending) {
+          const parentStudentFolderId = folder.parent_id ? folderMap.get(folder.parent_id) : null;
+          if (folder.parent_id && !parentStudentFolderId) {
+            nextPending.push(folder);
+            continue;
+          }
+
+          const existing = db.prepare(`
+            SELECT *
+            FROM student_project_folders
+            WHERE student_id = ? AND source_note_folder_id = ?
+          `).get(studentId, folder.id);
+
+          if (existing) {
+            db.prepare(`
+              UPDATE student_project_folders
+              SET name = ?, parent_id = ?, is_teacher_managed = 1, updated_at = ?
+              WHERE id = ? AND student_id = ?
+            `).run(folder.name, parentStudentFolderId || null, now, existing.id, studentId);
+            folderMap.set(folder.id, existing.id);
+          } else {
+            const id = uuidv4();
+            db.prepare(`
+              INSERT INTO student_project_folders
+                (id, student_id, name, parent_id, is_teacher_managed, source_note_folder_id, created_at, updated_at)
+              VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            `).run(id, studentId, folder.name, parentStudentFolderId || null, folder.id, now, now);
+            folderMap.set(folder.id, id);
+          }
+
+          progressed = true;
+        }
+
+        if (!progressed) break;
+        pending = nextPending;
+      }
+
+      notes.forEach(note => {
+        const folderId = note.folder_id ? folderMap.get(note.folder_id) || null : null;
+        const existing = db.prepare(`
+          SELECT *
+          FROM student_projects
+          WHERE student_id = ? AND source_note_id = ?
+        `).get(studentId, note.id);
+
+        if (existing) {
+          db.prepare(`
+            UPDATE student_projects
+            SET name = ?, code = ?, language = 'markdown', folder_id = ?, is_read_only = 1, updated_at = ?
+            WHERE id = ? AND student_id = ?
+          `).run(note.title, note.content || '', folderId, now, existing.id, studentId);
+        } else {
+          db.prepare(`
+            INSERT INTO student_projects
+              (id, student_id, name, code, language, folder_id, source_assignment_id, is_read_only, source_note_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'markdown', ?, NULL, 1, ?, ?, ?)
+          `).run(uuidv4(), studentId, note.title, note.content || '', folderId, note.id, now, now);
+        }
+      });
+
+      db.prepare(`
+        DELETE FROM student_projects
+        WHERE student_id = ? AND source_note_id IS NOT NULL
+          AND source_note_id NOT IN (${noteIds.size ? [...noteIds].map(() => '?').join(',') : "''"})
+      `).run(studentId, ...noteIds);
+
+      const managedFolders = db.prepare(`
+        SELECT *
+        FROM student_project_folders
+        WHERE student_id = ? AND source_note_folder_id IS NOT NULL
+      `).all(studentId);
+
+      const managedFolderMap = new Map(managedFolders.map(folder => [folder.id, folder]));
+      const getManagedFolderDepth = (folder) => {
+        let depth = 0;
+        let current = folder;
+        while (current?.parent_id && managedFolderMap.has(current.parent_id)) {
+          depth += 1;
+          current = managedFolderMap.get(current.parent_id);
+        }
+        return depth;
+      };
+
+      managedFolders
+        .sort((a, b) => getManagedFolderDepth(b) - getManagedFolderDepth(a))
+        .forEach(folder => {
+        if (folderIds.has(folder.source_note_folder_id)) return;
+
+        const fallbackFolderId = getOrCreateStudentFolder();
+
+        db.prepare(`
+          UPDATE student_project_folders
+          SET parent_id = ?, updated_at = ?
+          WHERE parent_id = ? AND student_id = ? AND IFNULL(is_teacher_managed, 0) = 0
+        `).run(fallbackFolderId, now, folder.id, studentId);
+
+        db.prepare(`
+          UPDATE student_projects
+          SET folder_id = ?, updated_at = ?
+          WHERE folder_id = ? AND student_id = ? AND IFNULL(is_read_only, 0) = 0
+        `).run(fallbackFolderId, now, folder.id, studentId);
+
+        db.prepare('DELETE FROM student_projects WHERE folder_id = ? AND student_id = ? AND IFNULL(is_read_only, 0) = 1')
+          .run(folder.id, studentId);
+
+        const childCount = db.prepare(`
+          SELECT COUNT(*) as count
+          FROM student_project_folders
+          WHERE parent_id = ? AND student_id = ?
+        `).get(folder.id, studentId).count;
+        const projectCount = db.prepare(`
+          SELECT COUNT(*) as count
+          FROM student_projects
+          WHERE folder_id = ? AND student_id = ?
+        `).get(folder.id, studentId).count;
+
+        if (!childCount && !projectCount) {
+          db.prepare('DELETE FROM student_project_folders WHERE id = ? AND student_id = ?').run(folder.id, studentId);
+          return;
+        }
+
+        db.prepare(`
+          UPDATE student_project_folders
+          SET is_teacher_managed = 0, source_note_folder_id = NULL, parent_id = ?, updated_at = ?
+          WHERE id = ? AND student_id = ?
+        `).run(fallbackFolderId, now, folder.id, studentId);
+      });
+    });
+
+    students.forEach(student => syncOneStudent(student.id));
   }
 };
 

@@ -42,6 +42,8 @@ const languageMap: Record<string, string> = {
   java: 'java',
   cpp: 'cpp',
   'c++': 'cpp',
+  markdown: 'markdown',
+  md: 'markdown',
 };
 
 const registeredCompletionLanguages = new Set<string>();

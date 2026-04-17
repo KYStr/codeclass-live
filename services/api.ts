@@ -124,6 +124,8 @@ export interface ProjectData {
   language: string;
   folderId?: string | null;
   sourceAssignmentId?: string | null;
+  readOnly?: boolean;
+  sourceNoteId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -133,8 +135,31 @@ export interface ProjectFolderData {
   studentId: string;
   name: string;
   parentId?: string | null;
+  isTeacherManaged?: boolean;
+  sourceNoteFolderId?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ClassroomNoteFolderData {
+  id: string;
+  classroomId: string;
+  name: string;
+  parentId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ClassroomNoteData {
+  id: string;
+  classroomId: string;
+  folderId?: string | null;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+  readOnly: boolean;
+  language: 'markdown';
 }
 
 export interface AiTutorMessageData {
@@ -379,6 +404,42 @@ export const classroomApi = {
   // 將學生移到教室
   moveStudent: (classroomId: string, studentId: string) =>
     request<{ success: boolean }>(`/classrooms/${classroomId}/students/${studentId}`, { method: 'POST' }),
+
+  getNoteFolders: (id: string) =>
+    request<{ success: boolean; folders: ClassroomNoteFolderData[] }>(`/classrooms/${id}/note-folders`),
+
+  createNoteFolder: (id: string, name: string, parentId?: string | null) =>
+    request<{ success: boolean; folder: ClassroomNoteFolderData }>(`/classrooms/${id}/note-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ name, parentId }),
+    }),
+
+  updateNoteFolder: (id: string, folderId: string, data: Partial<Pick<ClassroomNoteFolderData, 'name' | 'parentId'>>) =>
+    request<{ success: boolean; folder: ClassroomNoteFolderData }>(`/classrooms/${id}/note-folders/${folderId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteNoteFolder: (id: string, folderId: string) =>
+    request<{ success: boolean }>(`/classrooms/${id}/note-folders/${folderId}`, { method: 'DELETE' }),
+
+  getNotes: (id: string) =>
+    request<{ success: boolean; notes: ClassroomNoteData[] }>(`/classrooms/${id}/notes`),
+
+  createNote: (id: string, title: string, content: string, folderId?: string | null) =>
+    request<{ success: boolean; note: ClassroomNoteData }>(`/classrooms/${id}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ title, content, folderId }),
+    }),
+
+  updateNote: (id: string, noteId: string, data: Partial<Pick<ClassroomNoteData, 'title' | 'content' | 'folderId'>>) =>
+    request<{ success: boolean; note: ClassroomNoteData }>(`/classrooms/${id}/notes/${noteId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteNote: (id: string, noteId: string) =>
+    request<{ success: boolean }>(`/classrooms/${id}/notes/${noteId}`, { method: 'DELETE' }),
 };
 
 // ==================== 健康檢查 ====================

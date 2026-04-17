@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { StudentData, AssignmentData, studentApi, assignmentApi, classroomApi, ClassroomData } from '../services/api';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { StudentData, AssignmentData, studentApi, assignmentApi, classroomApi, ClassroomData, ClassroomNoteData, ClassroomNoteFolderData } from '../services/api';
 import { emitFeedback, emitCodeExecute, onCodeResult, emitClearFeedback, onClassroomTimerUpdated } from '../services/socket';
 import CodeEditor from './CodeEditor';
 import { analyzeStudentCode } from '../services/geminiService';
@@ -28,7 +30,14 @@ import {
   Play,
   Terminal,
   School,
-  ChevronDown
+  ChevronDown,
+  ChevronRight,
+  BookOpen,
+  Folder,
+  FolderPlus,
+  FileText,
+  Save,
+  X
 } from 'lucide-react';
 
 interface TeacherDashboardProps {
@@ -41,10 +50,54 @@ interface TeacherDashboardProps {
 
 interface TeacherHistoryState {
   codeclassTeacher: true;
-  activeTab: 'monitor' | 'assignments' | 'students' | 'classrooms';
+  activeTab: 'monitor' | 'assignments' | 'students' | 'classrooms' | 'notes';
   selectedClassroomId: string | null;
   selectedStudentId: string | null;
   viewingSubmissionId: string | null;
+}
+
+interface TeacherNoteFolderNode extends ClassroomNoteFolderData {
+  children: TeacherNoteFolderNode[];
+  notes: ClassroomNoteData[];
+}
+
+function buildTeacherNoteTree(folders: ClassroomNoteFolderData[], notes: ClassroomNoteData[]) {
+  const nodeMap = new Map<string, TeacherNoteFolderNode>();
+  folders.forEach(folder => {
+    nodeMap.set(folder.id, { ...folder, children: [], notes: [] });
+  });
+
+  const rootFolders: TeacherNoteFolderNode[] = [];
+  nodeMap.forEach(node => {
+    const parent = node.parentId ? nodeMap.get(node.parentId) : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      rootFolders.push(node);
+    }
+  });
+
+  const rootNotes: ClassroomNoteData[] = [];
+  notes.forEach(note => {
+    const folder = note.folderId ? nodeMap.get(note.folderId) : null;
+    if (folder) {
+      folder.notes.push(note);
+    } else {
+      rootNotes.push(note);
+    }
+  });
+
+  const sortNode = (node: TeacherNoteFolderNode) => {
+    node.children.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    node.notes.sort((a, b) => a.title.localeCompare(b.title, 'zh-Hant'));
+    node.children.forEach(sortNode);
+  };
+
+  rootFolders.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  rootFolders.forEach(sortNode);
+  rootNotes.sort((a, b) => a.title.localeCompare(b.title, 'zh-Hant'));
+
+  return { rootFolders, rootNotes };
 }
 
 const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ 
@@ -54,7 +107,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onUpdateAssignments,
   onRefresh
 }) => {
-  const [activeTab, setActiveTab] = useState<'monitor' | 'assignments' | 'students' | 'classrooms'>('monitor');
+  const [activeTab, setActiveTab] = useState<'monitor' | 'assignments' | 'students' | 'classrooms' | 'notes'>('monitor');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [viewingSubmission, setViewingSubmission] = useState<StudentData['submissions'][0] | null>(null);
   const [feedbackInput, setFeedbackInput] = useState('');
@@ -69,6 +122,15 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [timerMinutes, setTimerMinutes] = useState('10');
   const [isUpdatingTimer, setIsUpdatingTimer] = useState(false);
   const [timerNow, setTimerNow] = useState(Date.now());
+  const [noteFolders, setNoteFolders] = useState<ClassroomNoteFolderData[]>([]);
+  const [notes, setNotes] = useState<ClassroomNoteData[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedNoteFolderId, setSelectedNoteFolderId] = useState<string | null>(null);
+  const [collapsedNoteFolderIds, setCollapsedNoteFolderIds] = useState<Set<string>>(new Set());
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteContent, setNoteContent] = useState('');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isLoadingNotes, setIsLoadingNotes] = useState(false);
   
   // Assignment creation state
   const [newAssignmentTitle, setNewAssignmentTitle] = useState('');
@@ -128,6 +190,11 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [isCreatingAssignment, setIsCreatingAssignment] = useState(false);
 
   const selectedStudent = students.find(s => s.id === selectedStudentId);
+  const selectedNote = notes.find(note => note.id === selectedNoteId) || null;
+  const { rootFolders: noteTreeFolders, rootNotes: noteTreeRootNotes } = useMemo(
+    () => buildTeacherNoteTree(noteFolders, notes),
+    [noteFolders, notes]
+  );
   const classroomTimer = selectedClassroom?.timer || null;
   const classroomTimerRemainingMs = classroomTimer?.endsAt
     ? Math.max(0, classroomTimer.endsAt - timerNow)
@@ -191,6 +258,204 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     } finally {
       setIsUpdatingTimer(false);
     }
+  };
+
+  const loadClassroomNotes = async (classroomId = selectedClassroom?.id) => {
+    if (!classroomId) {
+      setNoteFolders([]);
+      setNotes([]);
+      setSelectedNoteId(null);
+      return;
+    }
+
+    setIsLoadingNotes(true);
+    try {
+      const [foldersResult, notesResult] = await Promise.all([
+        classroomApi.getNoteFolders(classroomId),
+        classroomApi.getNotes(classroomId)
+      ]);
+      setNoteFolders(foldersResult.folders || []);
+      setNotes(notesResult.notes || []);
+    } catch (err) {
+      console.error('Failed to load classroom notes:', err);
+    } finally {
+      setIsLoadingNotes(false);
+    }
+  };
+
+  useEffect(() => {
+    loadClassroomNotes(selectedClassroom?.id);
+  }, [selectedClassroom?.id]);
+
+  const handleSelectNote = (note: ClassroomNoteData) => {
+    setSelectedNoteId(note.id);
+    setSelectedNoteFolderId(note.folderId || null);
+    setNoteTitle(note.title);
+    setNoteContent(note.content);
+  };
+
+  const handleCreateNoteFolder = async () => {
+    if (!selectedClassroom) return;
+    const name = window.prompt('資料夾名稱', '課堂筆記');
+    if (!name?.trim()) return;
+
+    try {
+      const result = await classroomApi.createNoteFolder(selectedClassroom.id, name.trim(), selectedNoteFolderId);
+      setNoteFolders(prev => [...prev, result.folder]);
+      setSelectedNoteFolderId(result.folder.id);
+    } catch (err: any) {
+      alert(err.message || '新增筆記資料夾失敗');
+    }
+  };
+
+  const handleDeleteNoteFolder = async () => {
+    if (!selectedClassroom || !selectedNoteFolderId) return;
+    const folder = noteFolders.find(item => item.id === selectedNoteFolderId);
+    if (!folder) return;
+
+    if (!window.confirm(`確定要刪除「${folder.name}」嗎？學生在這個資料夾底下自己建立的內容會移到「學生資料夾」。`)) {
+      return;
+    }
+
+    try {
+      await classroomApi.deleteNoteFolder(selectedClassroom.id, folder.id);
+      setSelectedNoteFolderId(null);
+      setSelectedNoteId(null);
+      setNoteTitle('');
+      setNoteContent('');
+      await loadClassroomNotes(selectedClassroom.id);
+    } catch (err: any) {
+      alert(err.message || '刪除筆記資料夾失敗');
+    }
+  };
+
+  const handleCreateNote = async () => {
+    if (!selectedClassroom) return;
+    const title = window.prompt('筆記檔名', '課堂筆記.md');
+    if (!title?.trim()) return;
+
+    const starter = `# ${title.trim().replace(/\.md$/i, '')}\n\n`;
+    try {
+      const result = await classroomApi.createNote(selectedClassroom.id, title.trim(), starter, selectedNoteFolderId);
+      setNotes(prev => [result.note, ...prev]);
+      handleSelectNote(result.note);
+    } catch (err: any) {
+      alert(err.message || '新增筆記失敗');
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (!selectedClassroom || !selectedNoteId || !noteTitle.trim()) return;
+    setIsSavingNote(true);
+    try {
+      const result = await classroomApi.updateNote(selectedClassroom.id, selectedNoteId, {
+        title: noteTitle.trim(),
+        content: noteContent,
+        folderId: selectedNoteFolderId
+      });
+      setNotes(prev => prev.map(note => note.id === result.note.id ? result.note : note));
+      handleSelectNote(result.note);
+    } catch (err: any) {
+      alert(err.message || '儲存筆記失敗');
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (note: ClassroomNoteData) => {
+    if (!selectedClassroom) return;
+    if (!window.confirm(`確定要刪除「${note.title}」嗎？`)) return;
+
+    try {
+      await classroomApi.deleteNote(selectedClassroom.id, note.id);
+      setNotes(prev => prev.filter(item => item.id !== note.id));
+      if (selectedNoteId === note.id) {
+        setSelectedNoteId(null);
+        setNoteTitle('');
+        setNoteContent('');
+      }
+    } catch (err: any) {
+      alert(err.message || '刪除筆記失敗');
+    }
+  };
+
+  const toggleTeacherNoteFolder = (folderId: string) => {
+    setCollapsedNoteFolderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      return next;
+    });
+  };
+
+  const renderTeacherNoteRow = (note: ClassroomNoteData, depth = 0) => (
+    <button
+      key={note.id}
+      onClick={() => handleSelectNote(note)}
+      className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors ${
+        selectedNoteId === note.id
+          ? 'bg-blue-900/40 text-blue-100'
+          : 'text-gray-300 hover:bg-gray-700/60 hover:text-white'
+      }`}
+      style={{ paddingLeft: `${8 + depth * 18}px` }}
+      title={note.title}
+    >
+      <FileText size={15} className="shrink-0 text-emerald-300" />
+      <span className="min-w-0 flex-1 truncate">{note.title}</span>
+    </button>
+  );
+
+  const renderTeacherNoteFolderNode = (folder: TeacherNoteFolderNode, depth = 0): React.ReactNode => {
+    const isCollapsed = collapsedNoteFolderIds.has(folder.id);
+    const isSelected = selectedNoteFolderId === folder.id && !selectedNoteId;
+    const hasChildren = folder.children.length > 0 || folder.notes.length > 0;
+
+    return (
+      <div key={folder.id}>
+        <div
+          className={`group flex w-full items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors ${
+            isSelected
+              ? 'bg-gray-700 text-white'
+              : 'text-gray-300 hover:bg-gray-700/60 hover:text-white'
+          }`}
+          style={{ paddingLeft: `${6 + depth * 18}px` }}
+        >
+          <button
+            type="button"
+            onClick={() => hasChildren && toggleTeacherNoteFolder(folder.id)}
+            className="rounded p-0.5 text-gray-400 hover:bg-gray-600 hover:text-white disabled:opacity-30"
+            disabled={!hasChildren}
+            aria-label={isCollapsed ? '展開資料夾' : '收合資料夾'}
+          >
+            {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedNoteId(null);
+              setSelectedNoteFolderId(folder.id);
+              if (hasChildren && isCollapsed) {
+                toggleTeacherNoteFolder(folder.id);
+              }
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            title={folder.name}
+          >
+            <Folder size={15} className="shrink-0 text-amber-300" />
+            <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+          </button>
+        </div>
+        {!isCollapsed && (
+          <div className="mt-1 space-y-1">
+            {folder.children.map(child => renderTeacherNoteFolderNode(child, depth + 1))}
+            {folder.notes.map(note => renderTeacherNoteRow(note, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
   };
 
   // 同步老師端畫面到瀏覽器歷史，方便側鍵返回上一個畫面。
@@ -622,6 +887,15 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           >
             <UserPlus size={20} />
             學生管理
+          </button>
+          <button
+            onClick={() => { setActiveTab('notes'); setSelectedStudentId(null); setViewingSubmission(null); }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeTab === 'notes' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'hover:bg-gray-700 text-gray-300'
+            }`}
+          >
+            <BookOpen size={20} />
+            課堂筆記
           </button>
           <button
             onClick={() => { setActiveTab('classrooms'); setSelectedStudentId(null); setViewingSubmission(null); }}
@@ -1103,6 +1377,125 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         )}
 
         {/* ===================== 學生管理 ===================== */}
+        {activeTab === 'notes' && (
+          <div className="flex-1 p-8 overflow-y-auto">
+            <div className="max-w-6xl mx-auto">
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-bold text-blue-400 flex items-center gap-3">
+                    <BookOpen size={28} />
+                    課堂筆記
+                  </h2>
+                  <p className="mt-2 text-sm text-gray-400">建立給整間教室看的 Markdown 筆記。學生只能閱讀，不能修改。</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={handleCreateNoteFolder} disabled={!selectedClassroom} className="flex items-center gap-2 rounded-lg bg-gray-700 px-4 py-2 text-sm text-white hover:bg-gray-600 disabled:opacity-50">
+                    <FolderPlus size={16} /> 新增資料夾
+                  </button>
+                  <button onClick={handleCreateNote} disabled={!selectedClassroom} className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm text-white hover:bg-green-700 disabled:opacity-50">
+                    <FileText size={16} /> 新增筆記
+                  </button>
+                </div>
+              </div>
+
+              {!selectedClassroom ? (
+                <div className="rounded-xl border border-gray-700 bg-gray-800 p-8 text-center text-gray-400">請先選擇教室。</div>
+              ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-[280px_1fr] gap-6">
+                  <div className="flex min-h-[420px] flex-col rounded-xl border border-gray-700 bg-gray-800 p-4">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-gray-300">檔案樹</h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedNoteId(null);
+                          setSelectedNoteFolderId(null);
+                        }}
+                        className={`rounded-lg px-2 py-1 text-xs transition-colors ${
+                          !selectedNoteFolderId && !selectedNoteId
+                            ? 'bg-blue-900/40 text-blue-100'
+                            : 'bg-gray-900 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        根目錄
+                      </button>
+                    </div>
+
+                    <div className="mb-3 grid grid-cols-2 gap-2">
+                      <button onClick={handleCreateNoteFolder} disabled={!selectedClassroom} className="flex items-center justify-center gap-2 rounded-lg bg-gray-700 px-3 py-2 text-sm text-white hover:bg-gray-600 disabled:opacity-50">
+                        <FolderPlus size={15} /> 資料夾
+                      </button>
+                      <button onClick={handleCreateNote} disabled={!selectedClassroom} className="flex items-center justify-center gap-2 rounded-lg bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-700 disabled:opacity-50">
+                        <FileText size={15} /> 筆記
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={handleDeleteNoteFolder}
+                      disabled={!selectedNoteFolderId}
+                      className="mb-4 flex items-center justify-center gap-2 rounded-lg bg-red-900/40 px-3 py-2 text-sm text-red-200 hover:bg-red-900/60 disabled:opacity-40"
+                      title="刪除選取的老師資料夾"
+                    >
+                      <Trash2 size={15} />
+                      刪除選取資料夾
+                    </button>
+
+                    <div className="min-h-0 flex-1 space-y-1 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900/35 p-2">
+                      {isLoadingNotes && <p className="px-2 py-3 text-sm text-gray-500">讀取筆記中...</p>}
+                      {!isLoadingNotes && noteFolders.length === 0 && notes.length === 0 && (
+                        <p className="rounded border border-dashed border-gray-700 py-6 text-center text-sm text-gray-500">目前沒有筆記</p>
+                      )}
+                      {!isLoadingNotes && noteTreeFolders.map(folder => renderTeacherNoteFolderNode(folder))}
+                      {!isLoadingNotes && noteTreeRootNotes.map(note => renderTeacherNoteRow(note))}
+                    </div>
+                    <p className="mt-3 text-xs text-gray-500">選取資料夾後新增的資料夾或筆記會建立在該位置。</p>
+                  </div>
+                  <div className="rounded-xl border border-gray-700 bg-gray-800 overflow-hidden">
+                    {selectedNote ? (
+                      <div className="grid min-h-[620px] grid-cols-1 lg:grid-cols-2">
+                        <div className="flex min-h-0 flex-col border-b border-gray-700 lg:border-b-0 lg:border-r">
+                          <div className="space-y-3 border-b border-gray-700 p-4">
+                            <div className="flex gap-2">
+                              <input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-gray-600 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-blue-500" placeholder="檔名，例如 lesson-01.md" />
+                              <button onClick={handleSaveNote} disabled={isSavingNote || !noteTitle.trim()} className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50">
+                                {isSavingNote ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />} 儲存
+                              </button>
+                              <button onClick={() => handleDeleteNote(selectedNote)} className="rounded-lg bg-red-900/40 px-3 py-2 text-red-200 hover:bg-red-900/60" title="刪除筆記">
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                            <select value={selectedNoteFolderId || ''} onChange={(e) => setSelectedNoteFolderId(e.target.value || null)} className="w-full rounded-lg border border-gray-600 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-blue-500">
+                              <option value="">根目錄</option>
+                              {noteFolders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                            </select>
+                          </div>
+                          <div className="min-h-0 flex-1">
+                            <CodeEditor code={noteContent} onChange={setNoteContent} language="markdown" height="100%" />
+                          </div>
+                        </div>
+
+                        <div className="min-h-0 overflow-y-auto p-5">
+                          <div className="mb-3 flex items-center justify-between border-b border-gray-700 pb-3">
+                            <span className="flex items-center gap-2 text-sm font-semibold text-emerald-300"><BookOpen size={16} />學生看到的預覽</span>
+                            <span className="rounded border border-emerald-500/40 px-2 py-1 text-xs text-emerald-200">唯讀</span>
+                          </div>
+                          <div className="ai-markdown prose prose-invert max-w-none text-sm text-gray-200">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{noteContent}</ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[420px] items-center justify-center p-8 text-center text-gray-500">
+                        <div><BookOpen size={44} className="mx-auto mb-4 opacity-40" /><p>選一份筆記，或新增一個 Markdown 檔案。</p></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'students' && (
           <div className="flex-1 p-8 overflow-y-auto">
             <div className="max-w-3xl mx-auto">

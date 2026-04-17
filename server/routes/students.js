@@ -1,5 +1,5 @@
 ﻿import express from 'express';
-import { userOperations, codeOperations, feedbackOperations, submissionOperations, assignmentOperations, folderOperations, projectOperations, aiMessageOperations, classroomOperations, formatClassroomTimer } from '../database.js';
+import { userOperations, codeOperations, feedbackOperations, submissionOperations, assignmentOperations, folderOperations, projectOperations, aiMessageOperations, classroomOperations, formatClassroomTimer, classroomNoteSyncOperations, createDefaultStudentCode } from '../database.js';
 import { generateTutorHint } from '../services/kimiTutor.js';
 
 export const studentRoutes = express.Router();
@@ -12,6 +12,8 @@ const formatProject = (project) => ({
   language: project.language,
   folderId: project.folder_id,
   sourceAssignmentId: project.source_assignment_id,
+  readOnly: !!project.is_read_only,
+  sourceNoteId: project.source_note_id,
   createdAt: project.created_at,
   updatedAt: project.updated_at
 });
@@ -21,6 +23,8 @@ const formatFolder = (folder) => ({
   studentId: folder.student_id,
   name: folder.name,
   parentId: folder.parent_id,
+  isTeacherManaged: !!folder.is_teacher_managed,
+  sourceNoteFolderId: folder.source_note_folder_id,
   createdAt: folder.created_at,
   updatedAt: folder.updated_at
 });
@@ -95,6 +99,10 @@ studentRoutes.get('/:id', (req, res) => {
   if (!student) {
     return res.status(404).json({ error: 'Request failed' });
   }
+
+  if (student.classroom_id) {
+    classroomNoteSyncOperations.syncClassroomToStudentProjects(student.classroom_id);
+  }
   
   const code = codeOperations.getCode(student.id);
   const feedbacks = feedbackOperations.getByStudent(student.id);
@@ -145,6 +153,9 @@ studentRoutes.post('/', (req, res) => {
   }
   
   const student = userOperations.createStudent(name.trim(), classroomId);
+  if (student.classroom_id) {
+    classroomNoteSyncOperations.syncClassroomToStudentProjects(student.classroom_id);
+  }
   
   // ???恥?嗥垢
   req.io.emit('student:created', {
@@ -157,7 +168,7 @@ studentRoutes.post('/', (req, res) => {
     id: student.id,
     name: student.name,
     classroomId: student.classroom_id,
-    currentCode: `# ${student.name} ??撘Ⅳ\n# 隢?ㄐ??蝺典神...\n\nprint("Hello, World!")`,
+    currentCode: createDefaultStudentCode(student.name),
     currentLanguage: 'python',
     isOnline: false,
     isPasswordSet: false,
@@ -306,6 +317,10 @@ studentRoutes.get('/:id/project-folders', (req, res) => {
     return res.status(404).json({ error: 'Request failed' });
   }
 
+  if (student.classroom_id) {
+    classroomNoteSyncOperations.syncClassroomToStudentProjects(student.classroom_id);
+  }
+
   res.json(folderOperations.getByStudent(req.params.id).map(formatFolder));
 });
 
@@ -333,6 +348,11 @@ studentRoutes.put('/:id/project-folders/:folderId', (req, res) => {
     return res.status(404).json({ error: 'Request failed' });
   }
 
+  const existingFolder = folderOperations.getById(req.params.folderId, req.params.id);
+  if (existingFolder?.is_teacher_managed) {
+    return res.status(403).json({ error: 'Request failed' });
+  }
+
   const folder = folderOperations.update(req.params.folderId, req.params.id, req.body);
   if (!folder) {
     return res.status(404).json({ error: 'Request failed' });
@@ -347,6 +367,11 @@ studentRoutes.delete('/:id/project-folders/:folderId', (req, res) => {
     return res.status(404).json({ error: 'Request failed' });
   }
 
+  const existingFolder = folderOperations.getById(req.params.folderId, req.params.id);
+  if (existingFolder?.is_teacher_managed) {
+    return res.status(403).json({ error: 'Request failed' });
+  }
+
   const result = folderOperations.deleteEmpty(req.params.folderId, req.params.id);
   if (!result.deleted && result.reason === 'not_empty') {
     return res.status(400).json({ error: 'Request failed' });
@@ -359,6 +384,10 @@ studentRoutes.get('/:id/projects', (req, res) => {
   const student = userOperations.getById(req.params.id);
   if (!student) {
     return res.status(404).json({ error: 'Request failed' });
+  }
+
+  if (student.classroom_id) {
+    classroomNoteSyncOperations.syncClassroomToStudentProjects(student.classroom_id);
   }
 
   res.json(projectOperations.getByStudent(req.params.id).map(formatProject));
@@ -401,6 +430,11 @@ studentRoutes.put('/:id/projects/:projectId', (req, res) => {
     return res.status(404).json({ error: 'Request failed' });
   }
 
+  const existingProject = projectOperations.getById(req.params.projectId, req.params.id);
+  if (existingProject?.is_read_only) {
+    return res.status(403).json({ error: 'Request failed' });
+  }
+
   const project = projectOperations.update(req.params.projectId, req.params.id, req.body);
   if (!project) {
     return res.status(404).json({ error: 'Request failed' });
@@ -413,6 +447,11 @@ studentRoutes.delete('/:id/projects/:projectId', (req, res) => {
   const student = userOperations.getById(req.params.id);
   if (!student) {
     return res.status(404).json({ error: 'Request failed' });
+  }
+
+  const existingProject = projectOperations.getById(req.params.projectId, req.params.id);
+  if (existingProject?.is_read_only) {
+    return res.status(403).json({ error: 'Request failed' });
   }
 
   projectOperations.delete(req.params.projectId, req.params.id);

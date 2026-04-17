@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { StudentData, AssignmentData, ProjectData, ProjectFolderData, AiTutorMessageData, studentApi } from '../services/api';
-import { emitCodeUpdate, emitCodeExecute, emitStudentMessage, onCodeResult } from '../services/socket';
+import { StudentData, AssignmentData, ProjectData, ProjectFolderData, AiTutorMessageData, ClassroomNoteData, ClassroomNoteFolderData, studentApi, classroomApi } from '../services/api';
+import { emitCodeUpdate, emitCodeExecute, emitStudentMessage, onCodeResult, onClassroomNotesUpdated } from '../services/socket';
 import CodeEditor, { type CodeEditorThemeKey } from './CodeEditor';
 import {
   MessageSquare,
@@ -28,6 +28,8 @@ import {
   ChevronDown,
   FolderPlus,
   FileCode,
+  FileText,
+  BookOpen,
   LogOut
 } from 'lucide-react';
 
@@ -41,6 +43,11 @@ interface StudentDashboardProps {
 interface ProjectFolderNode extends ProjectFolderData {
   children: ProjectFolderNode[];
   projects: ProjectData[];
+}
+
+interface ClassroomNoteFolderNode extends ClassroomNoteFolderData {
+  children: ClassroomNoteFolderNode[];
+  notes: ClassroomNoteData[];
 }
 
 function normalizeMarkdownTables(markdown: string) {
@@ -328,6 +335,45 @@ function buildProjectTree(folders: ProjectFolderData[], projects: ProjectData[])
   return { rootFolders, rootProjects };
 }
 
+function buildClassroomNoteTree(folders: ClassroomNoteFolderData[], notes: ClassroomNoteData[]) {
+  const nodeMap = new Map<string, ClassroomNoteFolderNode>();
+  folders.forEach(folder => {
+    nodeMap.set(folder.id, { ...folder, children: [], notes: [] });
+  });
+
+  const rootFolders: ClassroomNoteFolderNode[] = [];
+  nodeMap.forEach(node => {
+    const parent = node.parentId ? nodeMap.get(node.parentId) : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      rootFolders.push(node);
+    }
+  });
+
+  const rootNotes: ClassroomNoteData[] = [];
+  notes.forEach(note => {
+    const folder = note.folderId ? nodeMap.get(note.folderId) : null;
+    if (folder) {
+      folder.notes.push(note);
+    } else {
+      rootNotes.push(note);
+    }
+  });
+
+  const sortNode = (node: ClassroomNoteFolderNode) => {
+    node.children.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+    node.notes.sort((a, b) => a.title.localeCompare(b.title, 'zh-Hant'));
+    node.children.forEach(sortNode);
+  };
+
+  rootFolders.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  rootFolders.forEach(sortNode);
+  rootNotes.sort((a, b) => a.title.localeCompare(b.title, 'zh-Hant'));
+
+  return { rootNoteFolders: rootFolders, rootNotes };
+}
+
 const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignments, onUpdateStudent, onLogout }) => {
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState(true);
@@ -336,10 +382,15 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const [hasNewFeedback, setHasNewFeedback] = useState(false);
   const [projects, setProjects] = useState<ProjectData[]>([]);
   const [projectFolders, setProjectFolders] = useState<ProjectFolderData[]>([]);
+  const [classroomNotes, setClassroomNotes] = useState<ClassroomNoteData[]>([]);
+  const [classroomNoteFolders, setClassroomNoteFolders] = useState<ClassroomNoteFolderData[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(new Set());
+  const [collapsedNoteFolderIds, setCollapsedNoteFolderIds] = useState<Set<string>>(new Set());
   const [isRootCollapsed, setIsRootCollapsed] = useState(false);
+  const [isNotesRootCollapsed, setIsNotesRootCollapsed] = useState(false);
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [collapsedAssignmentSections, setCollapsedAssignmentSections] = useState<Set<string>>(new Set(['ended']));
@@ -385,6 +436,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const classroomAssignments = assignments.filter(a => a.classroomId === student.classroomId);
   const selectedAssignment = assignments.find(a => a.id === selectedAssignmentId);
   const activeProject = projects.find(project => project.id === activeProjectId);
+  const activeNote = classroomNotes.find(note => note.id === activeNoteId) || null;
   const activeAssignment = selectedAssignment || assignments.find(a => a.id === activeProject?.sourceAssignmentId);
   const assignmentDescriptionForAi = activeAssignment
     ? `${activeAssignment.title}\n\n${activeAssignment.description || ''}`.trim()
@@ -392,6 +444,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const { rootFolders, rootProjects } = useMemo(
     () => buildProjectTree(projectFolders, projects),
     [projectFolders, projects]
+  );
+  const { rootNoteFolders, rootNotes } = useMemo(
+    () => buildClassroomNoteTree(classroomNoteFolders, classroomNotes),
+    [classroomNoteFolders, classroomNotes]
   );
   const folderOptions = useMemo(() => {
     const options: { id: string | null; label: string }[] = [{ id: null, label: '根目錄' }];
@@ -423,9 +479,62 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     }
   };
 
+  const loadClassroomNotes = async () => {
+    if (!student.classroomId) {
+      setClassroomNotes([]);
+      setClassroomNoteFolders([]);
+      setActiveNoteId(null);
+      return;
+    }
+
+    try {
+      const [notesResult, foldersResult] = await Promise.all([
+        classroomApi.getNotes(student.classroomId),
+        classroomApi.getNoteFolders(student.classroomId)
+      ]);
+      setClassroomNotes(notesResult.notes || []);
+      setClassroomNoteFolders(foldersResult.folders || []);
+    } catch (err) {
+      console.error('Failed to load classroom notes:', err);
+    }
+  };
+
   useEffect(() => {
     loadProjects();
   }, [student.id]);
+
+  useEffect(() => {
+    loadClassroomNotes();
+  }, [student.classroomId]);
+
+  useEffect(() => {
+    if (activeNoteId && !classroomNotes.some(note => note.id === activeNoteId)) {
+      setActiveNoteId(null);
+    }
+  }, [activeNoteId, classroomNotes]);
+
+  useEffect(() => {
+    if (!activeProject?.readOnly) return;
+    setLocalCode(activeProject.code);
+    setLocalLanguage(activeProject.language);
+    setSelectedFolderId(activeProject.folderId || null);
+  }, [
+    activeProject?.id,
+    activeProject?.readOnly,
+    activeProject?.code,
+    activeProject?.language,
+    activeProject?.folderId,
+    activeProject?.updatedAt
+  ]);
+
+  useEffect(() => {
+    return onClassroomNotesUpdated((data) => {
+      if (data.classroomId === student.classroomId) {
+        loadProjects();
+        loadClassroomNotes();
+      }
+    });
+  }, [student.classroomId]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
@@ -433,7 +542,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   }, []);
 
   useEffect(() => {
-    if (!activeProjectId) {
+    if (!activeProjectId || activeProject?.readOnly) {
       setAiMessages([]);
       setAiThinkingSummary('');
       setShowAiSetup(false);
@@ -457,7 +566,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     return () => {
       isCancelled = true;
     };
-  }, [student.id, activeProjectId]);
+  }, [student.id, activeProjectId, activeProject?.readOnly]);
 
   useEffect(() => {
     window.localStorage.setItem(STUDENT_THEME_STORAGE_KEY, studentThemeKey);
@@ -537,10 +646,17 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   // ?瑁?隞?Ⅳ
   const handleLoadProject = (project: ProjectData) => {
     setActiveProjectId(project.id);
+    setActiveNoteId(null);
     setSelectedFolderId(project.folderId || null);
     setSelectedAssignmentId(project.sourceAssignmentId || null);
     setLocalCode(project.code);
     setLocalLanguage(project.language);
+    setExecutionResult(null);
+    setAiHint(null);
+  };
+
+  const handleLoadClassroomNote = (note: ClassroomNoteData) => {
+    setActiveNoteId(note.id);
     setExecutionResult(null);
     setAiHint(null);
   };
@@ -650,6 +766,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const moveProjectToFolder = async (projectId: string, folderId: string | null) => {
     const project = projects.find(item => item.id === projectId);
     if (!project || project.folderId === folderId) return;
+    if (project.readOnly) return;
 
     try {
       const updatedProject = await studentApi.updateProject(student.id, project.id, { folderId });
@@ -730,8 +847,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const renderProjectRow = (project: ProjectData, depth = 0) => (
     <div
       key={project.id}
-      draggable
+      draggable={!project.readOnly}
       onDragStart={(e) => {
+        if (project.readOnly) {
+          e.preventDefault();
+          return;
+        }
         setDraggingProjectId(project.id);
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', project.id);
@@ -753,16 +874,26 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
         onClick={() => handleLoadProject(project)}
         className="min-w-0 flex-1 text-left flex items-center gap-2"
       >
-        <FileCode size={14} className="text-gray-400 shrink-0" />
+        {project.language === 'markdown' ? (
+          <FileText size={14} className="text-emerald-300 shrink-0" />
+        ) : (
+          <FileCode size={14} className="text-gray-400 shrink-0" />
+        )}
         <span className="truncate text-sm">{project.name}</span>
       </button>
-      <button
-        onClick={() => handleDeleteProject(project)}
-        className="p-1 text-gray-500 hover:text-red-400 opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
-        title="刪除專案"
-      >
-        <Trash2 size={14} />
-      </button>
+      {project.readOnly ? (
+        <span className="shrink-0 rounded border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-200">
+          唯讀
+        </span>
+      ) : (
+        <button
+          onClick={() => handleDeleteProject(project)}
+          className="p-1 text-gray-500 hover:text-red-400 opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
+          title="刪除專案"
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
     </div>
   );
 
@@ -836,6 +967,66 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     );
   };
 
+  const toggleNoteFolder = (folderId: string) => {
+    setCollapsedNoteFolderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      return next;
+    });
+  };
+
+  const renderClassroomNoteRow = (note: ClassroomNoteData, depth = 0) => (
+    <button
+      key={note.id}
+      onClick={() => handleLoadClassroomNote(note)}
+      className={`w-full flex items-center gap-2 rounded border p-2 text-left ${
+        activeNoteId === note.id
+          ? 'bg-cyan-900/30 border-cyan-500 text-cyan-100'
+          : 'bg-gray-700/20 border-transparent hover:bg-gray-700/60 hover:border-gray-600'
+      }`}
+      style={{ marginLeft: depth * 14 }}
+    >
+      <FileText size={14} className="text-emerald-300 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-sm">{note.title}</span>
+      <span className="shrink-0 rounded border border-gray-600 px-1.5 py-0.5 text-[10px] text-gray-400">唯讀</span>
+    </button>
+  );
+
+  const renderClassroomNoteFolderNode = (folder: ClassroomNoteFolderNode, depth = 0) => {
+    const collapsed = collapsedNoteFolderIds.has(folder.id);
+
+    return (
+      <div key={folder.id} className="space-y-1">
+        <div
+          className="group flex items-center gap-1 rounded px-1 py-1 hover:bg-gray-700/50"
+          style={{ marginLeft: depth * 14 }}
+        >
+          <button
+            onClick={() => toggleNoteFolder(folder.id)}
+            className="p-0.5 text-gray-400 hover:text-white"
+            title={collapsed ? '展開資料夾' : '收合資料夾'}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+          <div className="min-w-0 flex-1 text-left flex items-center gap-2">
+            <Folder size={14} className="text-yellow-400 shrink-0" />
+            <span className="truncate text-sm font-medium">{folder.name}</span>
+          </div>
+        </div>
+        {!collapsed && (
+          <div className="space-y-1">
+            {folder.children.map(child => renderClassroomNoteFolderNode(child, depth + 1))}
+            {folder.notes.map(note => renderClassroomNoteRow(note, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderAssignmentButton = (assignment: AssignmentData) => {
     const isSubmitted = student.submissions.some(s => s.assignmentId === assignment.id);
     const overdue = isOverdue(assignment.dueDate);
@@ -846,6 +1037,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
         key={assignment.id}
         onClick={() => {
           setSelectedAssignmentId(assignment.id);
+          setActiveNoteId(null);
           setAiHint(null);
         }}
         className={`w-full text-left p-3 rounded-lg transition-all border ${
@@ -1016,6 +1208,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
       alert('請先建立或開啟一個練習專案，AI 對話會跟著專案保存。');
       return;
     }
+    if (activeProject?.readOnly) {
+      alert('老師筆記是唯讀內容，請切回自己的練習專案再使用 AI 提示。');
+      return;
+    }
     if (!message) {
       alert('請先輸入想問 AI 的問題');
       return;
@@ -1158,6 +1354,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const classroomTimerUrgent = classroomTimerActive && classroomTimerRemainingMs <= 5 * 60 * 1000;
   const studentTheme = studentThemeConfigs[studentThemeKey];
   const studentThemeStyle = studentTheme.vars as CSSProperties;
+  const isViewingClassroomNote = !!activeNote;
+  const isViewingTeacherProject = !!activeProject?.readOnly;
+  const isViewingTeacherMarkdown = isViewingTeacherProject && activeProject?.language === 'markdown';
 
   return (
     <div
@@ -1247,6 +1446,39 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
               <div className="space-y-1">
                 {rootFolders.map(folder => renderFolderNode(folder))}
                 {rootProjects.map(project => renderProjectRow(project))}
+                {false && (
+                <div className="mt-4 space-y-2 border-t border-gray-700 pt-3">
+                  <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide flex items-center gap-2">
+                    <BookOpen size={14} /> 課堂筆記
+                  </h3>
+                  <button
+                    onClick={() => setIsNotesRootCollapsed(prev => !prev)}
+                    className={`w-full flex items-center gap-2 rounded px-2 py-1.5 text-sm ${
+                      activeNoteId
+                        ? 'bg-emerald-900/30 text-emerald-200'
+                        : 'text-gray-300 hover:bg-gray-700/50'
+                    }`}
+                  >
+                    {isNotesRootCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    <Folder size={14} className="text-yellow-400" />
+                    老師筆記
+                  </button>
+                  {!isNotesRootCollapsed && (
+                    <div className="space-y-1">
+                      {classroomNotes.length === 0 && classroomNoteFolders.length === 0 ? (
+                        <p className="text-gray-500 text-sm py-3 text-center border border-dashed border-gray-700 rounded-lg">
+                          目前沒有課堂筆記
+                        </p>
+                      ) : (
+                        <>
+                          {rootNoteFolders.map(folder => renderClassroomNoteFolderNode(folder))}
+                          {rootNotes.map(note => renderClassroomNoteRow(note))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                )}
               </div>
             )}
           </div>
@@ -1566,13 +1798,18 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
           <div className="min-w-0 w-full flex flex-col gap-2 2xl:flex-row 2xl:items-center 2xl:justify-end">
             {activeProject && (
               <span className="min-w-0 text-xs text-cyan-300 max-w-full 2xl:max-w-40 truncate">
-                {activeProject.name}
+                {activeProject.readOnly ? `唯讀筆記：${activeProject.name}` : activeProject.name}
+              </span>
+            )}
+            {activeNote && (
+              <span className="min-w-0 text-xs text-emerald-300 max-w-full 2xl:max-w-56 truncate">
+                唯讀筆記：{activeNote.title}
               </span>
             )}
             <div className="grid min-w-0 w-full grid-cols-[repeat(2,minmax(0,1fr))] gap-2 2xl:flex 2xl:w-auto 2xl:flex-wrap 2xl:items-center 2xl:justify-end">
               <button
                 onClick={handleSaveCurrentProject}
-                disabled={isSavingProject}
+                disabled={isSavingProject || isViewingClassroomNote || isViewingTeacherProject}
                 className="min-w-0 max-w-full overflow-hidden flex items-center justify-center gap-2 px-2 sm:px-3 py-1.5 rounded-lg text-sm bg-cyan-700 text-white hover:bg-cyan-800 disabled:opacity-50 transition-all"
               >
                 {isSavingProject ? <Loader2 className="animate-spin shrink-0" size={16} /> : <Save className="shrink-0" size={16} />}
@@ -1580,8 +1817,11 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
               </button>
               <button
                 onClick={() => setShowInputPanel(!showInputPanel)}
+                disabled={isViewingClassroomNote || isViewingTeacherProject}
                 className={`min-w-0 max-w-full overflow-hidden flex items-center justify-center gap-2 px-2 sm:px-3 py-1.5 rounded-lg text-sm transition-all ${
-                  showInputPanel
+                  isViewingClassroomNote || isViewingTeacherProject
+                    ? 'bg-gray-700 text-gray-500 opacity-60'
+                    : showInputPanel
                     ? 'bg-yellow-600 text-white'
                     : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                 }`}
@@ -1591,7 +1831,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
               </button>
               <button
                 onClick={handleExecuteCode}
-                disabled={isExecuting}
+                disabled={isExecuting || isViewingClassroomNote || isViewingTeacherProject}
                 className="min-w-0 max-w-full overflow-hidden flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-2 sm:px-3 py-1.5 rounded-lg text-sm transition-all"
               >
                 {isExecuting ? <Loader2 className="animate-spin shrink-0" size={16} /> : <Play className="shrink-0" size={16} />}
@@ -1661,12 +1901,58 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
 
         {/* Code Editor */}
         <div className={`min-w-0 flex-1 overflow-hidden ${executionResult ? 'h-[calc(100%-180px)]' : ''}`}>
-          <CodeEditor
-            code={localCode}
-            onChange={handleCodeChange}
-            language={localLanguage}
-            editorTheme={studentTheme.editorTheme}
-          />
+          {activeNote || isViewingTeacherMarkdown ? (
+            <div className="h-full overflow-y-auto bg-gray-900 p-4 sm:p-6">
+              <div className="mx-auto max-w-4xl rounded-lg border border-gray-700 bg-gray-800/50 p-4 sm:p-6">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-gray-700 pb-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs text-emerald-300">
+                      <BookOpen size={14} />
+                      老師課堂筆記
+                    </div>
+                    <h2 className="mt-1 truncate text-xl font-bold text-white">{activeNote?.title || activeProject?.name}</h2>
+                  </div>
+                  <span className="rounded border border-emerald-500/40 bg-emerald-900/30 px-2 py-1 text-xs text-emerald-200">
+                    學生唯讀
+                  </span>
+                </div>
+                <div className="ai-markdown text-sm leading-relaxed">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p: ({ children }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
+                      h1: ({ children }) => <h1 className="mb-4 text-2xl font-bold text-white">{children}</h1>,
+                      h2: ({ children }) => <h2 className="mb-3 mt-5 text-xl font-bold text-white">{children}</h2>,
+                      h3: ({ children }) => <h3 className="mb-2 mt-4 text-lg font-semibold text-white">{children}</h3>,
+                      strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                      ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1">{children}</ul>,
+                      ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1">{children}</ol>,
+                      li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                      code: ({ children }) => <code className="rounded bg-gray-900/80 px-1 py-0.5 font-mono text-[0.85em] text-cyan-100">{children}</code>,
+                      pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded bg-gray-950 p-3 text-xs text-cyan-100">{children}</pre>,
+                      table: ({ children }) => (
+                        <div className="my-3 overflow-x-auto rounded border border-gray-600">
+                          <table className="w-full border-collapse text-left text-xs">{children}</table>
+                        </div>
+                      ),
+                      thead: ({ children }) => <thead className="bg-gray-900/70 text-gray-100">{children}</thead>,
+                      th: ({ children }) => <th className="border border-gray-600 px-2 py-1.5 font-semibold">{children}</th>,
+                      td: ({ children }) => <td className="border border-gray-700 px-2 py-1.5 align-top">{children}</td>
+                    }}
+                  >
+                    {normalizeMarkdownTables(activeNote?.content || localCode)}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <CodeEditor
+              code={localCode}
+              onChange={handleCodeChange}
+              language={localLanguage}
+              editorTheme={studentTheme.editorTheme}
+            />
+          )}
         </div>
 
         {/* Execution Result Panel */}

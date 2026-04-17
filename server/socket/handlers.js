@@ -37,6 +37,9 @@ export function setupSocketHandlers(io) {
       userOperations.setOnlineStatus(studentId, true);
       
       const student = userOperations.getById(studentId);
+      if (student?.classroom_id) {
+        socket.join(`classroom:${student.classroom_id}`);
+      }
       console.log(`👨‍🎓 學生已連接: ${student?.name} (${socket.id})`);
       
       // 通知老師

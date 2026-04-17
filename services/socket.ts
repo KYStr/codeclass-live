@@ -163,6 +163,10 @@ export interface ClassroomTimerEvent {
   } | null;
 }
 
+export interface ClassroomNotesUpdatedEvent {
+  classroomId: string;
+}
+
 // ??鈭辣
 export interface FeedbackEvent {
   id: string;
@@ -233,6 +237,10 @@ export function onStudentHelpStatus(callback: (data: StudentHelpRequestEvent) =>
 
 export function onClassroomTimerUpdated(callback: (data: ClassroomTimerEvent) => void): () => void {
   return onSocketEvent('classroom:timer-updated', callback);
+}
+
+export function onClassroomNotesUpdated(callback: (data: ClassroomNotesUpdatedEvent) => void): () => void {
+  return onSocketEvent('classroom:notes-updated', callback);
 }
 
 export function onNewFeedback(callback: (data: FeedbackEvent) => void): () => void {
