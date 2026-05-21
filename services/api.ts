@@ -328,6 +328,13 @@ export const assignmentApi = {
       body: JSON.stringify({ title, description, dueDate, classroomId }),
     }),
   
+  // 修改作業截止日期
+  updateDueDate: (id: string, dueDate: number | null) =>
+    request<AssignmentData>(`/assignments/${id}/due-date`, {
+      method: 'PUT',
+      body: JSON.stringify({ dueDate }),
+    }),
+
   // 切換作業開放狀態
   toggle: (id: string) =>
     request<{ success: boolean }>(`/assignments/${id}/toggle`, { method: 'POST' }),

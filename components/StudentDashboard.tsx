@@ -30,7 +30,8 @@ import {
   FileCode,
   FileText,
   BookOpen,
-  LogOut
+  LogOut,
+  Upload
 } from 'lucide-react';
 
 interface StudentDashboardProps {
@@ -393,6 +394,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   const [isNotesRootCollapsed, setIsNotesRootCollapsed] = useState(false);
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [dragOverAssignmentId, setDragOverAssignmentId] = useState<string | null>(null);
   const [collapsedAssignmentSections, setCollapsedAssignmentSections] = useState<Set<string>>(new Set(['ended']));
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
@@ -414,6 +416,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
   });
   const [chatWindowSize, setChatWindowSize] = useState({ width: 448, height: 544 });
   const [timerNow, setTimerNow] = useState(Date.now());
+
+  // 拖曳檔案上傳
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragCounterRef = useRef(0);
 
   // 程式執行
   const [isExecuting, setIsExecuting] = useState(false);
@@ -643,6 +649,168 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     setLocalLanguage(e.target.value);
   };
 
+  const allowedFileExtensions: Record<string, string> = {
+    '.py': 'python',
+    '.js': 'javascript',
+    '.java': 'java',
+    '.cpp': 'cpp',
+    '.c': 'cpp',
+    '.cc': 'cpp',
+    '.cxx': 'cpp',
+    '.h': 'cpp',
+    '.hpp': 'cpp',
+  };
+
+  const validateDroppedFile = (file: File): { lang: string } | null => {
+    const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+    const lang = allowedFileExtensions[ext];
+    if (!lang) {
+      const allowed = Object.keys(allowedFileExtensions).join(', ');
+      alert(`不支援此檔案格式。\n允許的格式：${allowed}`);
+      return null;
+    }
+    if (file.size > 1024 * 1024) {
+      alert('檔案過大，請選擇 1MB 以下的檔案');
+      return null;
+    }
+    return { lang };
+  };
+
+  const handleFileDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    dragCounterRef.current = 0;
+
+    if (!!activeNote || !!activeProject?.readOnly) return;
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    const result = validateDroppedFile(file);
+    if (!result) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = reader.result as string;
+      setLocalCode(content);
+      setLocalLanguage(result.lang);
+      setExecutionResult(null);
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleFileDropToFolder = async (e: React.DragEvent, folderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    setDragOverFolderId(null);
+    dragCounterRef.current = 0;
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    const result = validateDroppedFile(file);
+    if (!result) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const content = reader.result as string;
+      const projectName = file.name.replace(/\.[^.]+$/, '');
+      try {
+        const project = await studentApi.createProject(
+          student.id,
+          projectName,
+          content,
+          result.lang,
+          null,
+          folderId
+        );
+        setProjects(prev => [project, ...prev]);
+        handleLoadProject(project);
+        if (folderId) {
+          setCollapsedFolderIds(prev => {
+            const next = new Set(prev);
+            next.delete(folderId);
+            return next;
+          });
+        } else {
+          setIsRootCollapsed(false);
+        }
+      } catch (err: any) {
+        alert(err.message || '建立專案失敗，請稍後再試');
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleFileDropToAssignment = (e: React.DragEvent, assignment: AssignmentData) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    setDragOverAssignmentId(null);
+    dragCounterRef.current = 0;
+
+    const canSubmit = assignment.isOpen && !isOverdue(assignment.dueDate);
+    if (!canSubmit) {
+      alert('此作業已截止或已關閉，無法提交');
+      return;
+    }
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    const result = validateDroppedFile(file);
+    if (!result) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = reader.result as string;
+      setSelectedAssignmentId(assignment.id);
+      setActiveNoteId(null);
+      setAiHint(null);
+      setLocalCode(content);
+      setLocalLanguage(result.lang);
+      setExecutionResult(null);
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleEditorDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handlePageDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDraggingFile(true);
+    }
+  };
+
+  const handlePageDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      setIsDraggingFile(false);
+      dragCounterRef.current = 0;
+    }
+  };
+
+  const handlePageDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+    }
+  };
+
+  const handlePageDrop = (e: React.DragEvent) => {
+    setIsDraggingFile(false);
+    setDragOverAssignmentId(null);
+    dragCounterRef.current = 0;
+  };
+
   // ?瑁?隞?Ⅳ
   const handleLoadProject = (project: ProjectData) => {
     setActiveProjectId(project.id);
@@ -650,7 +818,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     setSelectedFolderId(project.folderId || null);
     setSelectedAssignmentId(project.sourceAssignmentId || null);
     setLocalCode(project.code);
-    setLocalLanguage(project.language);
+    setLocalLanguage(project.readOnly ? project.language : ensureProgrammingLanguage(project.language));
     setExecutionResult(null);
     setAiHint(null);
   };
@@ -737,9 +905,11 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     const name = window.prompt('專案名稱', '新的練習專案');
     if (!name?.trim()) return;
 
+    const projectLanguage = ensureProgrammingLanguage(localLanguage);
+    setLocalLanguage(projectLanguage);
     setIsSavingProject(true);
     try {
-      const project = await studentApi.createProject(student.id, name.trim(), '', localLanguage, null, selectedFolderId);
+      const project = await studentApi.createProject(student.id, name.trim(), '', projectLanguage, null, selectedFolderId);
       setProjects(prev => [project, ...prev]);
       handleLoadProject(project);
     } catch (err: any) {
@@ -913,9 +1083,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
           }`}
           style={{ marginLeft: depth * 14 }}
           onDragOver={(e) => {
-            if (!draggingProjectId) return;
+            if (!draggingProjectId && !isDraggingFile) return;
             e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = draggingProjectId ? 'move' : 'copy';
             setDragOverFolderId(folder.id);
           }}
           onDragLeave={() => {
@@ -923,7 +1094,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
           }}
           onDrop={(e) => {
             e.preventDefault();
-            handleProjectDrop(folder.id);
+            e.stopPropagation();
+            if (e.dataTransfer.files?.length > 0 && !draggingProjectId) {
+              handleFileDropToFolder(e, folder.id);
+            } else {
+              handleProjectDrop(folder.id);
+            }
           }}
         >
           <button
@@ -937,7 +1113,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
             onClick={() => setSelectedFolderId(folder.id)}
             className="min-w-0 flex-1 text-left flex items-center gap-2"
           >
-            <Folder size={14} className="text-yellow-400 shrink-0" />
+            <Folder size={14} className={`shrink-0 ${dragOverFolderId === folder.id && isDraggingFile ? 'text-cyan-400' : 'text-yellow-400'}`} />
             <span className="truncate text-sm font-medium">{folder.name}</span>
           </button>
           <button
@@ -1031,37 +1207,66 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     const isSubmitted = student.submissions.some(s => s.assignmentId === assignment.id);
     const overdue = isOverdue(assignment.dueDate);
     const timeRemaining = getTimeRemaining(assignment.dueDate);
+    const isDropTarget = dragOverAssignmentId === assignment.id && isDraggingFile;
+    const canSubmit = assignment.isOpen && !overdue;
 
     return (
-      <button
+      <div
         key={assignment.id}
         onClick={() => {
           setSelectedAssignmentId(assignment.id);
           setActiveNoteId(null);
           setAiHint(null);
+          setLocalLanguage(prev => ensureProgrammingLanguage(prev));
         }}
-        className={`w-full text-left p-3 rounded-lg transition-all border ${
-          selectedAssignmentId === assignment.id
-            ? 'bg-blue-900/40 border-blue-500 shadow-lg shadow-blue-500/20'
-            : 'bg-gray-700/30 border-gray-700 hover:bg-gray-700 hover:border-gray-600'
+        onDragOver={(e) => {
+          if (!isDraggingFile) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = 'copy';
+          setDragOverAssignmentId(assignment.id);
+        }}
+        onDragLeave={() => {
+          if (dragOverAssignmentId === assignment.id) setDragOverAssignmentId(null);
+        }}
+        onDrop={(e) => {
+          if (e.dataTransfer.files?.length > 0) {
+            handleFileDropToAssignment(e, assignment);
+          }
+        }}
+        className={`w-full text-left p-3 rounded-lg transition-all border cursor-pointer ${
+          isDropTarget
+            ? canSubmit
+              ? 'bg-green-900/40 border-green-400 ring-1 ring-green-400/50 shadow-lg shadow-green-500/20'
+              : 'bg-red-900/30 border-red-500/50'
+            : selectedAssignmentId === assignment.id
+              ? 'bg-blue-900/40 border-blue-500 shadow-lg shadow-blue-500/20'
+              : 'bg-gray-700/30 border-gray-700 hover:bg-gray-700 hover:border-gray-600'
         }`}
       >
         <div className="flex justify-between items-start gap-2">
           <span className="font-medium truncate flex-1">{assignment.title}</span>
-          {isSubmitted && <CheckCircle size={16} className="text-green-500 shrink-0" />}
+          {isDropTarget && canSubmit && <Upload size={16} className="text-green-400 shrink-0 animate-bounce" />}
+          {!isDropTarget && isSubmitted && <CheckCircle size={16} className="text-green-500 shrink-0" />}
         </div>
 
-        <div className="flex items-center gap-2 mt-1 text-xs">
-          {assignment.dueDate && (
-            <span className={`flex items-center gap-1 ${overdue ? 'text-red-400' : 'text-gray-500'}`}>
-              <Clock size={12} /> {timeRemaining}
-            </span>
-          )}
-          {!assignment.isOpen && (
-            <span className="text-gray-500">已關閉</span>
-          )}
-        </div>
-      </button>
+        {isDropTarget ? (
+          <p className="text-xs mt-1 text-green-300">
+            {canSubmit ? '放開以載入檔案，之後可提交' : '此作業已截止或已關閉'}
+          </p>
+        ) : (
+          <div className="flex items-center gap-2 mt-1 text-xs">
+            {assignment.dueDate && (
+              <span className={`flex items-center gap-1 ${overdue ? 'text-red-400' : 'text-gray-500'}`}>
+                <Clock size={12} /> {timeRemaining}
+              </span>
+            )}
+            {!assignment.isOpen && (
+              <span className="text-gray-500">已關閉</span>
+            )}
+          </div>
+        )}
+      </div>
     );
   };
 
@@ -1336,6 +1541,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
     { value: 'cpp', label: 'C++' }
   ];
 
+  const programmingLanguageValues = languages.map(l => l.value);
+  const ensureProgrammingLanguage = (lang: string) =>
+    programmingLanguageValues.includes(lang) ? lang : 'python';
+
   const ongoingAssignments = classroomAssignments.filter(assignment => (
     assignment.isOpen && !isOverdue(assignment.dueDate)
   ));
@@ -1363,6 +1572,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
       className="student-theme flex flex-col lg:flex-row h-screen w-screen max-w-full bg-gray-900 text-white overflow-hidden"
       data-student-theme={studentThemeKey}
       style={studentThemeStyle}
+      onDragEnter={handlePageDragEnter}
+      onDragLeave={handlePageDragLeave}
+      onDragOver={handlePageDragOver}
+      onDrop={handlePageDrop}
     >
       <style>{studentThemeCss}</style>
       {/* Left Sidebar */}
@@ -1375,6 +1588,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {isDraggingFile && (
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-cyan-400/60 bg-cyan-900/20 px-3 py-2 text-xs text-cyan-300 animate-pulse">
+              <Upload size={14} className="shrink-0" />
+              拖到資料夾建立專案，或拖到作業直接載入
+            </div>
+          )}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide flex items-center gap-2">
@@ -1414,9 +1633,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
                     : 'text-gray-300 hover:bg-gray-700/50'
               }`}
               onDragOver={(e) => {
-                if (!draggingProjectId) return;
+                if (!draggingProjectId && !isDraggingFile) return;
                 e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = draggingProjectId ? 'move' : 'copy';
                 setDragOverFolderId('root');
               }}
               onDragLeave={() => {
@@ -1424,11 +1644,16 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
               }}
               onDrop={(e) => {
                 e.preventDefault();
-                handleProjectDrop(null);
+                e.stopPropagation();
+                if (e.dataTransfer.files?.length > 0 && !draggingProjectId) {
+                  handleFileDropToFolder(e, null);
+                } else {
+                  handleProjectDrop(null);
+                }
               }}
             >
               {isRootCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-              <Folder size={14} className="text-yellow-400" />
+              <Folder size={14} className={`${dragOverFolderId === 'root' && isDraggingFile ? 'text-cyan-400' : 'text-yellow-400'}`} />
               根目錄
             </button>
 
@@ -1900,7 +2125,25 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ student, assignment
         )}
 
         {/* Code Editor */}
-        <div className={`min-w-0 flex-1 overflow-hidden ${executionResult ? 'h-[calc(100%-180px)]' : ''}`}>
+        <div
+          className={`min-w-0 flex-1 overflow-hidden relative ${executionResult ? 'h-[calc(100%-180px)]' : ''}`}
+          onDragOver={handleEditorDragOver}
+          onDrop={handleFileDrop}
+        >
+          {isDraggingFile && !activeNote && !activeProject?.readOnly && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900/80 backdrop-blur-sm border-2 border-dashed border-cyan-400 rounded-lg pointer-events-none">
+              <div className="text-center space-y-3">
+                <Upload size={48} className="mx-auto text-cyan-400 animate-bounce" />
+                <p className="text-lg font-semibold text-cyan-200">放到這裡直接載入編輯器</p>
+                <p className="text-sm text-gray-400">
+                  或拖到左側資料夾自動建立專案
+                </p>
+                <p className="text-xs text-gray-500">
+                  支援格式：{Object.keys(allowedFileExtensions).join(', ')}
+                </p>
+              </div>
+            </div>
+          )}
           {activeNote || isViewingTeacherMarkdown ? (
             <div className="h-full overflow-y-auto bg-gray-900 p-4 sm:p-6">
               <div className="mx-auto max-w-4xl rounded-lg border border-gray-700 bg-gray-800/50 p-4 sm:p-6">

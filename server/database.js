@@ -588,6 +588,12 @@ export const assignmentOperations = {
     db.prepare('UPDATE assignments SET is_open = NOT is_open WHERE id = ?').run(id);
   },
 
+  // 
+  updateDueDate: (id, dueDate) => {
+    db.prepare('UPDATE assignments SET due_date = ? WHERE id = ?').run(dueDate, id);
+    return db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+  },
+
   // ?芷雿平
   delete: (id) => {
     db.prepare('DELETE FROM assignments WHERE id = ?').run(id);

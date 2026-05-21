@@ -37,7 +37,9 @@ import {
   FolderPlus,
   FileText,
   Save,
-  X
+  X,
+  Pencil,
+  Check
 } from 'lucide-react';
 
 interface TeacherDashboardProps {
@@ -188,6 +190,8 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   // Loading states
   const [isCreatingStudent, setIsCreatingStudent] = useState(false);
   const [isCreatingAssignment, setIsCreatingAssignment] = useState(false);
+  const [editingDueDateId, setEditingDueDateId] = useState<string | null>(null);
+  const [editingDueDateValue, setEditingDueDateValue] = useState('');
 
   const selectedStudent = students.find(s => s.id === selectedStudentId);
   const selectedNote = notes.find(note => note.id === selectedNoteId) || null;
@@ -578,6 +582,31 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       onUpdateAssignments(assignments.filter(a => a.id !== assignmentId));
     } catch (err) {
       console.error('Failed to delete assignment:', err);
+    }
+  };
+
+  const handleStartEditDueDate = (assign: AssignmentData) => {
+    setEditingDueDateId(assign.id);
+    if (assign.dueDate) {
+      const d = new Date(assign.dueDate);
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      setEditingDueDateValue(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+      );
+    } else {
+      setEditingDueDateValue('');
+    }
+  };
+
+  const handleSaveDueDate = async (assignmentId: string) => {
+    try {
+      const dueDate = editingDueDateValue ? new Date(editingDueDateValue).getTime() : null;
+      const updated = await assignmentApi.updateDueDate(assignmentId, dueDate);
+      onUpdateAssignments(assignments.map(a => a.id === assignmentId ? updated : a));
+      setEditingDueDateId(null);
+    } catch (err) {
+      console.error('Failed to update due date:', err);
+      alert('修改截止時間失敗，請稍後再試');
     }
   };
 
@@ -1288,7 +1317,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     const overdue = isOverdue(assign.dueDate);
                     
                     return (
-                      <div key={assign.id} className={`bg-gray-800 rounded-xl border overflow-hidden ${
+                      <div key={assign.id} className={`group/card bg-gray-800 rounded-xl border overflow-hidden ${
                         !assign.isOpen ? 'border-gray-700 opacity-60' : overdue ? 'border-red-700/50' : 'border-gray-700'
                       }`}>
                         <div className="p-4 flex justify-between items-start">
@@ -1305,10 +1334,45 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             <p className="text-gray-400 text-sm whitespace-pre-wrap mb-2">{assign.description}</p>
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                               <span>建立：{formatDate(assign.createdAt)}</span>
-                              {assign.dueDate && (
-                                <span className={overdue ? 'text-red-400' : ''}>
-                                  截止：{formatDate(assign.dueDate)}
-                                </span>
+                              {editingDueDateId === assign.id ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="datetime-local"
+                                    value={editingDueDateValue}
+                                    onChange={(e) => setEditingDueDateValue(e.target.value)}
+                                    className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:border-blue-500 outline-none"
+                                  />
+                                  <button
+                                    onClick={() => handleSaveDueDate(assign.id)}
+                                    className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-green-900/30 text-green-400 hover:bg-green-900/50"
+                                    title="儲存"
+                                  >
+                                    <Check size={12} />
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingDueDateId(null)}
+                                    className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-gray-700 text-gray-400 hover:bg-gray-600"
+                                    title="取消"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleStartEditDueDate(assign)}
+                                  className="flex items-center gap-1 hover:text-blue-400 transition-colors"
+                                  title="修改截止時間"
+                                >
+                                  <Calendar size={12} />
+                                  {assign.dueDate ? (
+                                    <span className={overdue ? 'text-red-400' : ''}>
+                                      截止：{formatDate(assign.dueDate)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-600">設定截止時間</span>
+                                  )}
+                                  <Pencil size={10} className="opacity-0 group-hover/card:opacity-100" />
+                                </button>
                               )}
                             </div>
                           </div>

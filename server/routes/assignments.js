@@ -71,6 +71,39 @@ assignmentRoutes.post('/', (req, res) => {
   res.json(formattedAssignment);
 });
 
+// 修改作業截止日期
+assignmentRoutes.put('/:id/due-date', (req, res) => {
+  const { dueDate } = req.body;
+  const assignment = assignmentOperations.updateDueDate(req.params.id, dueDate ?? null);
+  
+  if (!assignment) {
+    return res.status(404).json({ error: '找不到此作業' });
+  }
+
+  const submissions = submissionOperations.getByAssignment(assignment.id);
+  const totalStudents = userOperations.getStudentCountByClassroom(assignment.classroom_id);
+
+  const formattedAssignment = {
+    id: assignment.id,
+    title: assignment.title,
+    description: assignment.description,
+    classroomId: assignment.classroom_id,
+    dueDate: assignment.due_date,
+    isOpen: !!assignment.is_open,
+    createdAt: assignment.created_at,
+    submissionCount: submissions.length,
+    totalStudents,
+    submitters: submissions.map(s => ({
+      studentId: s.student_id,
+      studentName: s.student_name,
+      submittedAt: s.created_at
+    }))
+  };
+
+  req.io.emit('assignment:updated', formattedAssignment);
+  res.json(formattedAssignment);
+});
+
 // 切換作業開放狀態
 assignmentRoutes.post('/:id/toggle', (req, res) => {
   assignmentOperations.toggleOpen(req.params.id);

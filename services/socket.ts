@@ -283,6 +283,10 @@ export function onAssignmentDeleted(callback: (data: { assignmentId: string }) =
   return onSocketEvent('assignment:deleted', callback);
 }
 
+export function onAssignmentUpdated(callback: (data: any) => void): () => void {
+  return onSocketEvent('assignment:updated', callback);
+}
+
 export function onFeedbackUpdated(callback: (data: { studentId: string; feedback: FeedbackEvent }) => void): () => void {
   return onSocketEvent('feedback:updated', callback);
 }

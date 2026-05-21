@@ -23,6 +23,7 @@ import {
   onAssignmentCreated,
   onAssignmentToggled,
   onAssignmentDeleted,
+  onAssignmentUpdated,
   onNewSubmission,
   onCodeResult,
   onFeedbackUpdated,
@@ -211,6 +212,7 @@ const App: React.FC = () => {
     unsubscribers.push(onAssignmentCreated(() => loadData()));
     unsubscribers.push(onAssignmentToggled(() => loadData()));
     unsubscribers.push(onAssignmentDeleted(() => loadData()));
+    unsubscribers.push(onAssignmentUpdated(() => loadData()));
 
     return () => {
       unsubscribers.forEach(unsub => unsub());
@@ -269,6 +271,7 @@ const App: React.FC = () => {
     unsubscribers.push(onAssignmentCreated(() => loadData()));
     unsubscribers.push(onAssignmentToggled(() => loadData()));
     unsubscribers.push(onAssignmentDeleted(() => loadData()));
+    unsubscribers.push(onAssignmentUpdated(() => loadData()));
 
     return () => {
       unsubscribers.forEach(unsub => unsub());
